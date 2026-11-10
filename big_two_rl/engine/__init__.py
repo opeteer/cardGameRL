@@ -30,6 +30,10 @@ from big_two_rl.engine.entropy import (
     get_hardware_seed,
     get_hardware_rng,
 )
+from big_two_rl.engine.luck_meter import (
+    calculate_initial_hand_luck,
+    get_hand_luck_breakdown,
+)
 
 __all__ = [
     "Card",
@@ -53,4 +57,6 @@ __all__ = [
     "HardwareEntropyHarvester",
     "get_hardware_seed",
     "get_hardware_rng",
+    "calculate_initial_hand_luck",
+    "get_hand_luck_breakdown",
 ]

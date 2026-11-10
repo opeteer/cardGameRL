@@ -33,6 +33,7 @@ COLOR_GOLD = (255, 215, 0)
 COLOR_CYAN = (0, 230, 230)
 COLOR_GRAY = (120, 120, 120)
 COLOR_PASS = (220, 50, 50)
+COLOR_LUCKY = (100, 240, 140)     # Vibrant lucky clover green
 COLOR_CARD_BG = (252, 252, 250)
 COLOR_CARD_BORDER = (160, 160, 160)
 
@@ -193,16 +194,17 @@ class BigTwoSpectator:
         wins: List[int],
         scores: List[int],
         current_game: int,
-        total_games: int
+        total_games: int,
+        luck_scores: Optional[List[int]] = None
     ):
-        """Draw Tournament Leaderboard HUD in top-left corner."""
-        sb_x, sb_y, sb_w, sb_h = 35, 30, 260, 150
+        """Draw Tournament Leaderboard HUD in top-left corner with Luck Tracker."""
+        sb_x, sb_y, sb_w, sb_h = 35, 30, 280, 175
         # Background card with border
         pygame.draw.rect(self.screen, (18, 32, 22), (sb_x, sb_y, sb_w, sb_h), border_radius=10)
         pygame.draw.rect(self.screen, COLOR_BORDER, (sb_x, sb_y, sb_w, sb_h), width=2, border_radius=10)
 
         # Header
-        hdr_txt = f"PAPAN SKOR ({current_game}/{total_games})"
+        hdr_txt = f"PAPAN SKOR & HOKI ({current_game}/{total_games})"
         hdr = self.font_small.render(hdr_txt, True, COLOR_GOLD)
         self.screen.blit(hdr, (sb_x + 10, sb_y + 8))
 
@@ -211,14 +213,22 @@ class BigTwoSpectator:
 
         # Rows for Curt, Albert, Sullivan, Bernstein
         max_w = max(wins) if max(wins) > 0 else -1
+        luckiest_idx = max(range(4), key=lambda i: luck_scores[i]) if (luck_scores and max(luck_scores) > 0) else -1
+
         for i in range(4):
-            y_pos = sb_y + 34 + i * 28
+            y_pos = sb_y + 32 + i * 27
             is_leader = (wins[i] == max_w and max_w > 0)
             col = COLOR_GOLD if is_leader else COLOR_WHITE
             prefix = "👑 " if is_leader else "• "
             agent_name = player_names[i]
             name_str = f"{prefix}{agent_name}"
-            score_str = f"{wins[i]} W | {scores[i]} pt"
+
+            if luck_scores is not None and i < len(luck_scores):
+                luck_val = luck_scores[i]
+                luck_icon = "🍀" if i == luckiest_idx else "☘"
+                score_str = f"{wins[i]}W|{scores[i]}pt {luck_icon}{luck_val}"
+            else:
+                score_str = f"{wins[i]} W | {scores[i]} pt"
 
             # Draw small avatar icon if available
             av = self.avatars.get(agent_name)
@@ -231,10 +241,25 @@ class BigTwoSpectator:
 
             lbl_name = self.font_tiny.render(name_str, True, col)
             lbl_score = self.font_tiny.render(score_str, True, col)
-            self.screen.blit(lbl_name, (text_x, y_pos + 4))
-            self.screen.blit(lbl_score, (sb_x + sb_w - lbl_score.get_width() - 8, y_pos + 4))
+            self.screen.blit(lbl_name, (text_x, y_pos + 3))
+            self.screen.blit(lbl_score, (sb_x + sb_w - lbl_score.get_width() - 8, y_pos + 3))
 
-    def draw_hand(self, player_idx: int, hand: Sequence[int], is_active: bool, has_passed: bool, player_names: List[str]):
+        # Footer showing luckiest agent if available
+        if luckiest_idx >= 0 and luck_scores:
+            pygame.draw.line(self.screen, (55, 75, 60), (sb_x + 8, sb_y + 144), (sb_x + sb_w - 8, sb_y + 144))
+            luck_lead_txt = f"🍀 Paling Hoki: {player_names[luckiest_idx]} ({luck_scores[luckiest_idx]} pt hoki)"
+            lbl_l = self.font_tiny.render(luck_lead_txt, True, COLOR_LUCKY)
+            self.screen.blit(lbl_l, (sb_x + 10, sb_y + 150))
+
+    def draw_hand(
+        self,
+        player_idx: int,
+        hand: Sequence[int],
+        is_active: bool,
+        has_passed: bool,
+        player_names: List[str],
+        initial_hand_luck: Optional[int] = None
+    ):
         """Render a player's hand at their designated table position."""
         n = len(hand)
         card_spacing = 24 if n > 8 else 30
@@ -275,7 +300,10 @@ class BigTwoSpectator:
         # Player badge
         bg_col = COLOR_GOLD if is_active else (35, 35, 35)
         txt_col = COLOR_BLACK if is_active else COLOR_WHITE
-        info_text = f"{labels[player_idx]} [{n} kartu]"
+        if initial_hand_luck is not None:
+            info_text = f"{labels[player_idx]} [{n}k | 🍀{initial_hand_luck}pt]"
+        else:
+            info_text = f"{labels[player_idx]} [{n} kartu]"
         lbl = self.font_med.render(info_text, True, txt_col)
         badge_rect = lbl.get_rect(center=badge_pos)
         pad_rect = badge_rect.inflate(16, 6)
@@ -378,9 +406,12 @@ class BigTwoSpectator:
         leaderboard_names: Optional[List[str]] = None,
         leaderboard_wins: Optional[List[int]] = None,
         leaderboard_scores: Optional[List[int]] = None,
-        seat_shuffle_banner: Optional[str] = None
+        seat_shuffle_banner: Optional[str] = None,
+        luck_scores: Optional[List[int]] = None,
+        round_luck_scores: Optional[List[int]] = None,
+        leaderboard_luck: Optional[List[int]] = None
     ):
-        """Render full game frame from game_state with live scoreboard."""
+        """Render full game frame from game_state with live scoreboard and luck meter."""
         names = player_names or DEFAULT_PLAYER_NAMES
         w_list = wins or [0, 0, 0, 0]
         s_list = scores or [0, 0, 0, 0]
@@ -388,6 +419,7 @@ class BigTwoSpectator:
         lead_names = leaderboard_names or names
         lead_w = leaderboard_wins if leaderboard_wins is not None else w_list
         lead_s = leaderboard_scores if leaderboard_scores is not None else s_list
+        lead_luck = leaderboard_luck if leaderboard_luck is not None else luck_scores
 
         # 1. Background Casino Table
         self.screen.fill(COLOR_BG)
@@ -418,14 +450,15 @@ class BigTwoSpectator:
             pygame.draw.rect(self.screen, COLOR_CYAN, bg_rect, width=1, border_radius=6)
             self.screen.blit(shuff_surface, shuff_rect)
 
-        # 3. Draw Scoreboard in Top-Left (Always tracks individual agents)
-        self.draw_scoreboard(lead_names, lead_w, lead_s, current_game, total_games)
+        # 3. Draw Scoreboard in Top-Left (Always tracks individual agents & luck)
+        self.draw_scoreboard(lead_names, lead_w, lead_s, current_game, total_games, luck_scores=lead_luck)
 
         # 4. Draw 4 Hands
         for p in range(4):
             is_active = (game_state.current_player == p and not game_state.game_over)
             has_passed = game_state.passes[p]
-            self.draw_hand(p, game_state.hands[p], is_active, has_passed, names)
+            p_luck = round_luck_scores[p] if (round_luck_scores is not None and p < len(round_luck_scores)) else None
+            self.draw_hand(p, game_state.hands[p], is_active, has_passed, names, initial_hand_luck=p_luck)
 
         # 5. Draw Center Trick with Last Action Ribbon
         self.draw_current_trick(
@@ -443,7 +476,7 @@ class BigTwoSpectator:
             overlay.fill((0, 0, 0, 160))
             self.screen.blit(overlay, (0, 0))
 
-            dialog_w, dialog_h = 620, 270
+            dialog_w, dialog_h = 650, 280
             dx = (self.width - dialog_w) // 2
             dy = (self.height - dialog_h) // 2
             pygame.draw.rect(self.screen, (22, 40, 28), (dx, dy, dialog_w, dialog_h), border_radius=16)
@@ -473,21 +506,21 @@ class BigTwoSpectator:
             if is_tournament_over:
                 title_txt = "🏆 JUARA TURNAMEN 🏆"
                 win_text = self.font_large.render(title_txt, True, COLOR_GOLD)
-                self.screen.blit(win_text, win_text.get_rect(center=(content_cx, dy + 36)))
+                self.screen.blit(win_text, win_text.get_rect(center=(content_cx, dy + 32)))
 
                 name_lbl = self.font_title.render(f"{winner_name.upper()}!", True, COLOR_WHITE)
-                self.screen.blit(name_lbl, name_lbl.get_rect(center=(content_cx, dy + 68)))
+                self.screen.blit(name_lbl, name_lbl.get_rect(center=(content_cx, dy + 64)))
 
                 sub_txt = f"Total Poin: {lead_s[champ_idx]} pt ({lead_w[champ_idx]} Kemenangan)"
                 sub_lbl = self.font_med.render(sub_txt, True, COLOR_CYAN)
-                self.screen.blit(sub_lbl, sub_lbl.get_rect(center=(content_cx, dy + 102)))
+                self.screen.blit(sub_lbl, sub_lbl.get_rect(center=(content_cx, dy + 96)))
             else:
                 title_txt = f"PEMENANG GAME {current_game}"
                 win_text = self.font_large.render(title_txt, True, COLOR_GOLD)
-                self.screen.blit(win_text, win_text.get_rect(center=(content_cx, dy + 36)))
+                self.screen.blit(win_text, win_text.get_rect(center=(content_cx, dy + 32)))
 
                 name_lbl = self.font_title.render(f"{winner_name}!", True, COLOR_WHITE)
-                self.screen.blit(name_lbl, name_lbl.get_rect(center=(content_cx, dy + 68)))
+                self.screen.blit(name_lbl, name_lbl.get_rect(center=(content_cx, dy + 64)))
 
                 if round_scores is not None:
                     payoff_str = f"Poin Game: {names[0]}: +{round_scores[0]} | {names[1]}: +{round_scores[1]} | {names[2]}: +{round_scores[2]} | {names[3]}: +{round_scores[3]}"
@@ -495,15 +528,25 @@ class BigTwoSpectator:
                     payoffs = game_state.get_payoffs()
                     payoff_str = f"Poin Ronde: {names[0]}: {payoffs[0]:+d} | {names[1]}: {payoffs[1]:+d} | {names[2]}: {payoffs[2]:+d} | {names[3]}: {payoffs[3]:+d}"
                 p_lbl = self.font_small.render(payoff_str, True, COLOR_CYAN)
-                self.screen.blit(p_lbl, p_lbl.get_rect(center=(content_cx, dy + 106)))
+                self.screen.blit(p_lbl, p_lbl.get_rect(center=(content_cx, dy + 98)))
 
             total_str = f"Total Skor: {lead_names[0]}: {lead_s[0]} pt | {lead_names[1]}: {lead_s[1]} pt | {lead_names[2]}: {lead_s[2]} pt | {lead_names[3]}: {lead_s[3]} pt"
             t_lbl = self.font_small.render(total_str, True, COLOR_WHITE)
-            self.screen.blit(t_lbl, t_lbl.get_rect(center=(content_cx, dy + 144)))
+            self.screen.blit(t_lbl, t_lbl.get_rect(center=(content_cx, dy + 134)))
+
+            # Luck Leader Line
+            if lead_luck and max(lead_luck) > 0:
+                luckiest_idx = max(range(4), key=lambda i: lead_luck[i])
+                if is_tournament_over:
+                    luck_str = f"🍀 PEMAIN PALING HOKI: {lead_names[luckiest_idx].upper()}! ({lead_luck[luckiest_idx]} Poin Hoki Awal)"
+                else:
+                    luck_str = f"🍀 Akumulasi Paling Hoki: {lead_names[luckiest_idx]} ({lead_luck[luckiest_idx]} pt hoki)"
+                l_lbl = self.font_small.render(luck_str, True, COLOR_LUCKY)
+                self.screen.blit(l_lbl, l_lbl.get_rect(center=(content_cx, dy + 168)))
 
             hint_txt = "Turnamen selesai!" if is_tournament_over else "Menyiapkan game berikutnya..."
             hint = self.font_tiny.render(hint_txt, True, (200, 200, 200))
-            self.screen.blit(hint, hint.get_rect(center=(content_cx, dy + 225)))
+            self.screen.blit(hint, hint.get_rect(center=(content_cx, dy + 242)))
 
         if not self.headless:
             pygame.display.flip()

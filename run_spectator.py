@@ -3,7 +3,8 @@
 Entrypoint script for visualizing Big Two (Capsa Banting) Tournament.
 Features custom player names: Curt, Albert, Sullivan, Bernstein.
 Displays live on-screen Scoreboard, slow pacing, crowns the champion,
-and supports dynamic seat reshuffling (pengacakan tempat duduk) every N rounds.
+supports dynamic seat reshuffling (pengacakan tempat duduk) every N rounds,
+and tracks initial hand luck accumulation (Mekanisme Akumulasi Poin Hoki).
 """
 import os
 import sys
@@ -14,6 +15,7 @@ from typing import Optional, List, Tuple
 
 from big_two_rl.engine.card import card_to_str, cards_to_str
 from big_two_rl.engine.evaluator import evaluate_hand
+from big_two_rl.engine.luck_meter import calculate_initial_hand_luck, get_hand_luck_breakdown
 from big_two_rl.env.actions import action_to_cards
 from big_two_rl.env.big_two_env import raw_env
 from big_two_rl.gui.spectator import BigTwoSpectator, DEFAULT_PLAYER_NAMES
@@ -48,20 +50,29 @@ def compute_fair_tournament_scores(hands, winner_idx):
     return round_points, card_counts
 
 
-def print_scoreboard(player_names, total_wins, total_scores, current_game, total_games):
-    """Print ASCII scoreboard to stdout."""
-    print("\n" + "=" * 65)
-    print(f"🏆 PAPAN SKOR TURNAMEN (Game {current_game}/{total_games})")
-    print("=" * 65)
-    print(f"{'Peringkat':<10} | {'Nama Pemain':<15} | {'Menang':<8} | {'Poin Turnamen':<15}")
-    print("-" * 65)
+def print_scoreboard(player_names, total_wins, total_scores, current_game, total_games, total_luck=None):
+    """Print ASCII scoreboard to stdout with tournament points and accumulated luck."""
+    print("\n" + "=" * 78)
+    print(f"🏆 PAPAN SKOR TURNAMEN & INDEKS HOKI (Game {current_game}/{total_games})")
+    print("=" * 78)
+    print(f"{'Peringkat':<10} | {'Nama Pemain':<15} | {'Menang':<8} | {'Poin Skor':<12} | {'Akumulasi Hoki 🍀':<20}")
+    print("-" * 78)
 
     # Sort players by total_scores descending, then total_wins descending
     ranking = sorted(range(4), key=lambda i: (total_scores[i], total_wins[i]), reverse=True)
+    luckiest_idx = max(range(4), key=lambda i: total_luck[i]) if (total_luck and max(total_luck) > 0) else -1
+
     for rank, p in enumerate(ranking, 1):
         crown = "👑 " if rank == 1 and total_scores[p] > 0 else "   "
-        print(f"{crown}#{rank:<5} | {player_names[p] + ' [RL]':<18} | {total_wins[p]:<8} | {total_scores[p]} pt")
-    print("=" * 65 + "\n")
+        if total_luck is not None:
+            l_val = total_luck[p]
+            l_avg = l_val / max(1, current_game)
+            clover = " 🍀[Paling Hoki]" if p == luckiest_idx else ""
+            luck_str = f"{l_val:5d} pt (avg {l_avg:4.1f}){clover}"
+        else:
+            luck_str = "-"
+        print(f"{crown}#{rank:<5} | {player_names[p] + ' [RL]':<18} | {total_wins[p]:<8} | {total_scores[p]:<5} pt    | {luck_str}")
+    print("=" * 78 + "\n")
 
 
 def run_spectator_simulation(
@@ -77,17 +88,18 @@ def run_spectator_simulation(
 ):
     canonical_names = list(player_names) if player_names else list(DEFAULT_PLAYER_NAMES)
 
-    print("=" * 65)
-    print("TURNAMEN CAPSA BANTING (BIG TWO) - 4 AGENT BATTLE (ALL PPO RL)")
-    print("=" * 65)
+    print("=" * 78)
+    print("TURNAMEN CAPSA BANTING (BIG TWO) - 4 AGENT BATTLE (ALL PPO RL + LUCK METER)")
+    print("=" * 78)
     for i, name in enumerate(canonical_names):
         print(f"Agen {i} ({name:<9}): PPO Reinforcement Learning Policy")
-    print("-" * 65)
+    print("-" * 78)
     print(f"Jumlah Pertandingan : {num_games} Game")
     print(f"Jeda Setiap Langkah : {step_delay:.2f} detik")
     print(f"Acak Tempat Duduk   : Setiap {shuffle_freq} Ronde" if shuffle_freq > 0 else "Acak Tempat Duduk   : Nonaktif (Kursi Tetap)")
+    print(f"Mekanisme Hoki      : Evaluasi & Akumulasi Nilai Kartu Awal (Aktif 🍀)")
     print(f"Mode Headless       : {headless}")
-    print("=" * 65)
+    print("=" * 78)
 
     if headless:
         os.environ["SDL_VIDEODRIVER"] = "dummy"
@@ -96,11 +108,13 @@ def run_spectator_simulation(
     all_agents = create_tournament_agents(model_path=model_path, shared_model=False)
     print(">>> Seluruh 4 agen menggunakan sistem PPO RL yang sepenuhnya identik!\n")
 
-    spectator = BigTwoSpectator(title="Turnamen Capsa Banting - Seat Rotation Edition")
+    spectator = BigTwoSpectator(title="Turnamen Capsa Banting - Seat Rotation & Luck Meter Edition")
     spectator.fps = max(1, fps)
 
     canonical_wins = [0, 0, 0, 0]
     canonical_scores = [0, 0, 0, 0]
+    canonical_luck = [0, 0, 0, 0]
+    canonical_luck_history = [[] for _ in range(4)]
     current_seats = [0, 1, 2, 3]  # Map: seat index (0..3) -> canonical agent index (0..3)
     rng = np.random.default_rng(seed if seed is not None else 42)
 
@@ -138,6 +152,20 @@ def run_spectator_simulation(
         game_seed = (seed + game_idx) if seed is not None else None
         env.reset(seed=game_seed)
 
+        # 1. Evaluasi & Akumulasi Hoki Kartu Awal Ronde
+        seat_initial_hands = [list(env.game_state.hands[s]) for s in range(4)]
+        seat_round_lucks = [calculate_initial_hand_luck(seat_initial_hands[s]) for s in range(4)]
+        seat_breakdowns = [get_hand_luck_breakdown(seat_initial_hands[s]) for s in range(4)]
+
+        # Akumulasikan nilai hoki ke masing-masing agen pemilik kursi
+        for s in range(4):
+            agent_idx = current_seats[s]
+            canonical_luck[agent_idx] += seat_round_lucks[s]
+            canonical_luck_history[agent_idx].append(seat_round_lucks[s])
+
+        round_luckiest_seat = max(range(4), key=lambda s: seat_round_lucks[s])
+        tourney_luckiest_idx = max(range(4), key=lambda i: canonical_luck[i])
+
         print(f"\n{'#' * 65}")
         print(f"### MEMULAI GAME {current_game_num}/{num_games} ###")
         print(f"Susunan Meja: South={seat_names[0]} | West={seat_names[1]} | North={seat_names[2]} | East={seat_names[3]}")
@@ -152,6 +180,17 @@ def run_spectator_simulation(
                 print(f"  • CPU Jitter   : 0x{info['cpu_jitter']:016x} (RDTSCP Execution Delta)")
                 print(f"  • Mem Latency  : 0x{info['memory_latency']:016x} (16MB DRAM Bus Stride)")
                 print(f"  • Cache Miss   : 0x{info['cache_miss']:016x} (clflush Hit/Miss Delta)")
+
+        print(f"🍀 Indeks Hoki Kartu Awal (Game {current_game_num}):")
+        for s in range(4):
+            agent_name = seat_names[s]
+            pts = seat_round_lucks[s]
+            highs = seat_breakdowns[s]["highlights"]
+            luck_crown = " 🍀 [Paling Hoki Ronde Ini]" if s == round_luckiest_seat else ""
+            print(f"  • Kursi {s} ({agent_name:<9}): {pts:3d} pt ({highs}){luck_crown}")
+        print(f"  >>> Pemimpin Hoki Sementara: {canonical_names[tourney_luckiest_idx]} (Total: {canonical_luck[tourney_luckiest_idx]} pt hoki | Avg: {canonical_luck[tourney_luckiest_idx] / current_game_num:.1f} pt/game)")
+        print("-" * 65)
+
         start_p = env.game_state.current_player
         print(f"Kartu 3♦ dipegang oleh: {seat_names[start_p]} (Kursi {start_p}) [Wajib membuka putaran]")
         print("-" * 65)
@@ -168,7 +207,10 @@ def run_spectator_simulation(
             leaderboard_names=canonical_names,
             leaderboard_wins=canonical_wins,
             leaderboard_scores=canonical_scores,
-            seat_shuffle_banner=shuffle_banner
+            seat_shuffle_banner=shuffle_banner,
+            luck_scores=canonical_luck,
+            round_luck_scores=seat_round_lucks,
+            leaderboard_luck=canonical_luck
         )
 
         running = True
@@ -191,7 +233,10 @@ def run_spectator_simulation(
                     leaderboard_names=canonical_names,
                     leaderboard_wins=canonical_wins,
                     leaderboard_scores=canonical_scores,
-                    seat_shuffle_banner=shuffle_banner
+                    seat_shuffle_banner=shuffle_banner,
+                    luck_scores=canonical_luck,
+                    round_luck_scores=seat_round_lucks,
+                    leaderboard_luck=canonical_luck
                 )
                 continue
 
@@ -238,7 +283,10 @@ def run_spectator_simulation(
                 leaderboard_names=canonical_names,
                 leaderboard_wins=canonical_wins,
                 leaderboard_scores=canonical_scores,
-                seat_shuffle_banner=shuffle_banner
+                seat_shuffle_banner=shuffle_banner,
+                luck_scores=canonical_luck,
+                round_luck_scores=seat_round_lucks,
+                leaderboard_luck=canonical_luck
             )
 
             # 6. Paced delay while processing interactive events
@@ -259,7 +307,10 @@ def run_spectator_simulation(
                     leaderboard_names=canonical_names,
                     leaderboard_wins=canonical_wins,
                     leaderboard_scores=canonical_scores,
-                    seat_shuffle_banner=shuffle_banner
+                    seat_shuffle_banner=shuffle_banner,
+                    luck_scores=canonical_luck,
+                    round_luck_scores=seat_round_lucks,
+                    leaderboard_luck=canonical_luck
                 )
 
         # Game ended
@@ -282,7 +333,7 @@ def run_spectator_simulation(
             print("-" * 65)
 
             # Print updated scoreboard (Always sorted by agent's tournament points)
-            print_scoreboard(canonical_names, canonical_wins, canonical_scores, current_game_num, num_games)
+            print_scoreboard(canonical_names, canonical_wins, canonical_scores, current_game_num, num_games, total_luck=canonical_luck)
 
             if screenshot_dir:
                 shot_name = f"tournament_game_{current_game_num}.png"
@@ -309,7 +360,10 @@ def run_spectator_simulation(
                         leaderboard_names=canonical_names,
                         leaderboard_wins=canonical_wins,
                         leaderboard_scores=canonical_scores,
-                        seat_shuffle_banner=shuffle_banner
+                        seat_shuffle_banner=shuffle_banner,
+                        luck_scores=canonical_luck,
+                        round_luck_scores=seat_round_lucks,
+                        leaderboard_luck=canonical_luck
                     )
 
         if not running:
@@ -317,24 +371,33 @@ def run_spectator_simulation(
 
     # Determine Champion based on canonical_scores, then canonical_wins
     champ_idx = max(range(4), key=lambda i: (canonical_scores[i], canonical_wins[i]))
-    print("\n" + "=" * 65)
-    print(f"HASIL AKHIR TURNAMEN {num_games} GAME (SISTEM SKOR ADIL + SEAT ROTATION)")
-    print("=" * 65)
-    print_scoreboard(canonical_names, canonical_wins, canonical_scores, num_games, num_games)
-    print("*" * 65)
+    luckiest_idx = max(range(4), key=lambda i: canonical_luck[i])
+
+    print("\n" + "=" * 78)
+    print(f"HASIL AKHIR TURNAMEN {num_games} GAME (SISTEM SKOR ADIL + SEAT ROTATION + LUCK METER)")
+    print("=" * 78)
+    print_scoreboard(canonical_names, canonical_wins, canonical_scores, num_games, num_games, total_luck=canonical_luck)
+    print("*" * 78)
     print(f"🏆 JUARA UTAMA TURNAMEN ADALAH: {canonical_names[champ_idx].upper()}! 🏆")
     print(f"Meraih {canonical_scores[champ_idx]} Poin Turnamen dengan {canonical_wins[champ_idx]} Kemenangan Game dari {num_games} Game!")
-    print("*" * 65 + "\n")
+    print("-" * 78)
+    print(f"🍀 PEMAIN PALING HOKI ADALAH: {canonical_names[luckiest_idx].upper()}! 🍀")
+    print(f"Menerima akumulasi kartu awal sebesar {canonical_luck[luckiest_idx]} Poin Hoki (Rata-rata {canonical_luck[luckiest_idx]/num_games:.1f} pt/game)!")
+    if champ_idx == luckiest_idx:
+        print("💡 Analisis Skill vs Hoki: Pemain paling hoki berhasil mengonversi keberuntungannya menjadi gelar juara turnamen!")
+    else:
+        print(f"💡 Analisis Skill vs Hoki: {canonical_names[champ_idx]} membuktikan superioritas strategi dan ketangkasan RL karena berhasil menjadi JUARA meskipun {canonical_names[luckiest_idx]} memiliki kartu awal yang paling hoki!")
+    print("*" * 78 + "\n")
 
     if screenshot_dir:
         spectator.save_screenshot(os.path.join(screenshot_dir, "tournament_final_champion.png"))
 
     spectator.close()
-    return champ_idx, canonical_wins, canonical_scores
+    return champ_idx, canonical_wins, canonical_scores, canonical_luck
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Turnamen Capsa Banting 4 Pemain")
+    parser = argparse.ArgumentParser(description="Turnamen Capsa Banting 4 Pemain dengan Evaluasi Hoki")
     parser.add_argument("--games", type=int, default=10, help="Jumlah game turnamen (default: 10)")
     parser.add_argument("--delay", type=float, default=5.0, help="Jeda setiap langkah dalam detik (default: 5.0)")
     parser.add_argument("--fps", type=int, default=2, help="Frame rate Pygame (default: 2)")
