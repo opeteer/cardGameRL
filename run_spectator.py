@@ -2,7 +2,8 @@
 """
 Entrypoint script for visualizing Big Two (Capsa Banting) Tournament.
 Features custom player names: Curt, Albert, Sullivan, Bernstein.
-Displays live on-screen Scoreboard, slow pacing (5s delay), and crowns the champion.
+Displays live on-screen Scoreboard, slow pacing, crowns the champion,
+and supports dynamic seat reshuffling (pengacakan tempat duduk) every N rounds.
 """
 import os
 import sys
@@ -71,45 +72,75 @@ def run_spectator_simulation(
     headless: bool = False,
     screenshot_dir: str = None,
     player_names: list = None,
-    seed: Optional[int] = None
+    seed: Optional[int] = None,
+    shuffle_freq: int = 5
 ):
-    if player_names is None:
-        player_names = DEFAULT_PLAYER_NAMES
+    canonical_names = list(player_names) if player_names else list(DEFAULT_PLAYER_NAMES)
 
     print("=" * 65)
     print("TURNAMEN CAPSA BANTING (BIG TWO) - 4 AGENT BATTLE (ALL PPO RL)")
     print("=" * 65)
-    print(f"Pemain 0 (South): {player_names[0]} (PPO Reinforcement Learning Policy)")
-    print(f"Pemain 1 (West) : {player_names[1]} (PPO Reinforcement Learning Policy)")
-    print(f"Pemain 2 (North): {player_names[2]} (PPO Reinforcement Learning Policy)")
-    print(f"Pemain 3 (East) : {player_names[3]} (PPO Reinforcement Learning Policy)")
+    for i, name in enumerate(canonical_names):
+        print(f"Agen {i} ({name:<9}): PPO Reinforcement Learning Policy")
     print("-" * 65)
-    print(f"Jumlah Pertandingan: {num_games} Game")
-    print(f"Jeda Setiap Langkah: {step_delay:.1f} detik")
-    print(f"Mode Headless      : {headless}")
+    print(f"Jumlah Pertandingan : {num_games} Game")
+    print(f"Jeda Setiap Langkah : {step_delay:.2f} detik")
+    print(f"Acak Tempat Duduk   : Setiap {shuffle_freq} Ronde" if shuffle_freq > 0 else "Acak Tempat Duduk   : Nonaktif (Kursi Tetap)")
+    print(f"Mode Headless       : {headless}")
     print("=" * 65)
 
     if headless:
         os.environ["SDL_VIDEODRIVER"] = "dummy"
 
     # Instantiate all 4 tournament agents using identical PPO RL system
-    agents = create_tournament_agents(model_path=model_path)
+    all_agents = create_tournament_agents(model_path=model_path, shared_model=False)
     print(">>> Seluruh 4 agen menggunakan sistem PPO RL yang sepenuhnya identik!\n")
 
-    spectator = BigTwoSpectator(title="Turnamen Capsa Banting - Curt vs Albert vs Sullivan vs Bernstein")
+    spectator = BigTwoSpectator(title="Turnamen Capsa Banting - Seat Rotation Edition")
     spectator.fps = max(1, fps)
 
-    total_wins = [0, 0, 0, 0]
-    total_scores = [0, 0, 0, 0]
+    canonical_wins = [0, 0, 0, 0]
+    canonical_scores = [0, 0, 0, 0]
+    current_seats = [0, 1, 2, 3]  # Map: seat index (0..3) -> canonical agent index (0..3)
+    rng = np.random.default_rng(seed if seed is not None else 42)
 
     for game_idx in range(num_games):
         current_game_num = game_idx + 1
+
+        # Cek pengacakan tempat duduk setiap shuffle_freq ronde
+        is_shuffle_round = (shuffle_freq > 0 and game_idx > 0 and game_idx % shuffle_freq == 0)
+        shuffle_banner = None
+        if is_shuffle_round:
+            prev_seats = list(current_seats)
+            for _ in range(20):
+                new_perm = list(rng.permutation(4))
+                if new_perm != prev_seats:
+                    current_seats = new_perm
+                    break
+            else:
+                current_seats = [(s + 1) % 4 for s in prev_seats]
+
+            shuffle_banner = f"🔄 KURSI DIACAK: South={canonical_names[current_seats[0]]} | West={canonical_names[current_seats[1]]} | North={canonical_names[current_seats[2]]} | East={canonical_names[current_seats[3]]}"
+            print("\n" + "🔄 " + "=" * 61 + " 🔄")
+            print(f"🔄 PENGACAKAN TEMPAT DUDUK (SEAT RESHUFFLE - TIAP {shuffle_freq} RONDE) 🔄")
+            print("🔄 " + "=" * 61 + " 🔄")
+            print(f"  • Kursi 0 (South): {canonical_names[current_seats[0]]}")
+            print(f"  • Kursi 1 (West) : {canonical_names[current_seats[1]]}")
+            print(f"  • Kursi 2 (North): {canonical_names[current_seats[2]]}")
+            print(f"  • Kursi 3 (East) : {canonical_names[current_seats[3]]}")
+            print("-" * 65)
+
+        # Mapping nama dan agen pada masing-masing kursi ronde ini
+        seat_names = [canonical_names[current_seats[s]] for s in range(4)]
+        seat_agents = [all_agents[current_seats[s]] for s in range(4)]
+
         env = raw_env()
         game_seed = (seed + game_idx) if seed is not None else None
         env.reset(seed=game_seed)
 
         print(f"\n{'#' * 65}")
         print(f"### MEMULAI GAME {current_game_num}/{num_games} ###")
+        print(f"Susunan Meja: South={seat_names[0]} | West={seat_names[1]} | North={seat_names[2]} | East={seat_names[3]}")
         print(f"{'#' * 65}")
         gs = env.game_state
         if hasattr(gs, 'last_seed') and gs.last_seed is not None:
@@ -122,18 +153,22 @@ def run_spectator_simulation(
                 print(f"  • Mem Latency  : 0x{info['memory_latency']:016x} (16MB DRAM Bus Stride)")
                 print(f"  • Cache Miss   : 0x{info['cache_miss']:016x} (clflush Hit/Miss Delta)")
         start_p = env.game_state.current_player
-        print(f"Kartu 3♦ dipegang oleh: {player_names[start_p]} (Wajib membuka putaran)")
+        print(f"Kartu 3♦ dipegang oleh: {seat_names[start_p]} (Kursi {start_p}) [Wajib membuka putaran]")
         print("-" * 65)
 
-        last_action_text = f"{player_names[start_p]} wajib membuka dengan 3♦"
+        last_action_text = f"{seat_names[start_p]} wajib membuka dengan 3♦"
         spectator.render_state(
             env.game_state,
-            player_names=player_names,
-            wins=total_wins,
-            scores=total_scores,
+            player_names=seat_names,
+            wins=canonical_wins,
+            scores=canonical_scores,
             current_game=current_game_num,
             total_games=num_games,
-            last_action_text=last_action_text
+            last_action_text=last_action_text,
+            leaderboard_names=canonical_names,
+            leaderboard_wins=canonical_wins,
+            leaderboard_scores=canonical_scores,
+            seat_shuffle_banner=shuffle_banner
         )
 
         running = True
@@ -147,12 +182,16 @@ def run_spectator_simulation(
             if spectator.paused:
                 spectator.render_state(
                     env.game_state,
-                    player_names=player_names,
-                    wins=total_wins,
-                    scores=total_scores,
+                    player_names=seat_names,
+                    wins=canonical_wins,
+                    scores=canonical_scores,
                     current_game=current_game_num,
                     total_games=num_games,
-                    last_action_text=last_action_text
+                    last_action_text=last_action_text,
+                    leaderboard_names=canonical_names,
+                    leaderboard_wins=canonical_wins,
+                    leaderboard_scores=canonical_scores,
+                    seat_shuffle_banner=shuffle_banner
                 )
                 continue
 
@@ -162,14 +201,14 @@ def run_spectator_simulation(
             legal_actions = np.where(mask == 1)[0]
 
             if len(legal_actions) == 0:
-                print(f"Error: Tidak ada aksi legal untuk {player_names[p_idx]}")
+                print(f"Error: Tidak ada aksi legal untuk {seat_names[p_idx]}")
                 break
 
-            # 3. Decision Making: All 4 agents use PPO RL Policy
+            # 3. Decision Making: Agent di kursi p_idx menggunakan model PPO masing-masing
             legal_moves = env.game_state.get_legal_actions(p_idx)
-            agent = agents[p_idx]
+            agent = seat_agents[p_idx]
             action = agent.select_action(env, p_idx, legal_actions, legal_moves)
-            tag = f"[{player_names[p_idx]} - RL]    "
+            tag = f"[{seat_names[p_idx]} - RL]    "
 
             # 4. Resolve cards and format narrative
             player_hand = env.game_state.hands[p_idx]
@@ -177,28 +216,32 @@ def run_spectator_simulation(
 
             turn_num = env.game_state.turn_count + 1
             if len(cards_move) == 0:
-                last_action_text = f"{player_names[p_idx]}: PASS"
-                print(f"Turn {turn_num:2d} | {player_names[p_idx]:9s} {tag} : PASS")
+                last_action_text = f"{seat_names[p_idx]}: PASS"
+                print(f"Turn {turn_num:2d} | {seat_names[p_idx]:9s} {tag} : PASS")
             else:
                 combo = evaluate_hand(cards_move)
                 combo_name = combo.combo_type.name if combo else "Cards"
                 c_str = cards_to_str(cards_move)
-                last_action_text = f"{player_names[p_idx]} memainkan {combo_name}: {c_str}"
-                print(f"Turn {turn_num:2d} | {player_names[p_idx]:9s} {tag} : memainkan {combo_name:12s} {c_str}")
+                last_action_text = f"{seat_names[p_idx]} memainkan {combo_name}: {c_str}"
+                print(f"Turn {turn_num:2d} | {seat_names[p_idx]:9s} {tag} : memainkan {combo_name:12s} {c_str}")
 
             # 5. Step Environment
             env.step(action)
             spectator.render_state(
                 env.game_state,
-                player_names=player_names,
-                wins=total_wins,
-                scores=total_scores,
+                player_names=seat_names,
+                wins=canonical_wins,
+                scores=canonical_scores,
                 current_game=current_game_num,
                 total_games=num_games,
-                last_action_text=last_action_text
+                last_action_text=last_action_text,
+                leaderboard_names=canonical_names,
+                leaderboard_wins=canonical_wins,
+                leaderboard_scores=canonical_scores,
+                seat_shuffle_banner=shuffle_banner
             )
 
-            # 6. Paced delay (default 5.0 seconds) while processing interactive events
+            # 6. Paced delay while processing interactive events
             delay_start = time.time()
             effective_delay = max(0.05, step_delay / (spectator.fps / 2.0))
             while time.time() - delay_start < effective_delay:
@@ -207,31 +250,39 @@ def run_spectator_simulation(
                     break
                 spectator.render_state(
                     env.game_state,
-                    player_names=player_names,
-                    wins=total_wins,
-                    scores=total_scores,
+                    player_names=seat_names,
+                    wins=canonical_wins,
+                    scores=canonical_scores,
                     current_game=current_game_num,
                     total_games=num_games,
-                    last_action_text=last_action_text
+                    last_action_text=last_action_text,
+                    leaderboard_names=canonical_names,
+                    leaderboard_wins=canonical_wins,
+                    leaderboard_scores=canonical_scores,
+                    seat_shuffle_banner=shuffle_banner
                 )
 
         # Game ended
         if env.game_state.game_over:
             w = env.game_state.winner
-            total_wins[w] += 1
+            winner_canonical_idx = current_seats[w]
+            canonical_wins[winner_canonical_idx] += 1
             round_points, card_counts = compute_fair_tournament_scores(env.game_state.hands, w)
-            for i in range(4):
-                total_scores[i] += round_points[i]
+
+            # Akumulasikan poin turnamen ke masing-masing agen pemilik kursi
+            for s in range(4):
+                agent_idx = current_seats[s]
+                canonical_scores[agent_idx] += round_points[s]
 
             is_last_game = (current_game_num == num_games)
             print("-" * 65)
-            print(f">>> GAME {current_game_num} SELESAI: {player_names[w]} MENANG dalam {env.game_state.turn_count} giliran!")
-            print(f">>> Poin Turnamen Game Ini : {player_names[0]}: +{round_points[0]} pt | {player_names[1]}: +{round_points[1]} pt | {player_names[2]}: +{round_points[2]} pt | {player_names[3]}: +{round_points[3]} pt")
-            print(f">>> Kartu Berhasil Dibuang : {player_names[0]}: {13 - card_counts[0]}/13 | {player_names[1]}: {13 - card_counts[1]}/13 | {player_names[2]}: {13 - card_counts[2]}/13 | {player_names[3]}: {13 - card_counts[3]}/13")
+            print(f">>> GAME {current_game_num} SELESAI: {seat_names[w]} MENANG dalam {env.game_state.turn_count} giliran!")
+            print(f">>> Poin Turnamen Game Ini : {seat_names[0]}: +{round_points[0]} pt | {seat_names[1]}: +{round_points[1]} pt | {seat_names[2]}: +{round_points[2]} pt | {seat_names[3]}: +{round_points[3]} pt")
+            print(f">>> Kartu Berhasil Dibuang : {seat_names[0]}: {13 - card_counts[0]}/13 | {seat_names[1]}: {13 - card_counts[1]}/13 | {seat_names[2]}: {13 - card_counts[2]}/13 | {seat_names[3]}: {13 - card_counts[3]}/13")
             print("-" * 65)
 
-            # Print updated scoreboard
-            print_scoreboard(player_names, total_wins, total_scores, current_game_num, num_games)
+            # Print updated scoreboard (Always sorted by agent's tournament points)
+            print_scoreboard(canonical_names, canonical_wins, canonical_scores, current_game_num, num_games)
 
             if screenshot_dir:
                 shot_name = f"tournament_game_{current_game_num}.png"
@@ -240,42 +291,46 @@ def run_spectator_simulation(
             # Display round end dialog
             if running:
                 end_timer = time.time()
-                pause_time = 4.0 if is_last_game else 2.5
+                pause_time = 3.5 if is_last_game else (0.6 if num_games >= 50 else 1.2)
                 while time.time() - end_timer < pause_time:
                     if not spectator.handle_events():
                         running = False
                         break
                     spectator.render_state(
                         env.game_state,
-                        player_names=player_names,
-                        wins=total_wins,
-                        scores=total_scores,
+                        player_names=seat_names,
+                        wins=canonical_wins,
+                        scores=canonical_scores,
                         round_scores=round_points,
                         current_game=current_game_num,
                         total_games=num_games,
-                        last_action_text=f"Game {current_game_num} dimenangkan oleh {player_names[w]}!",
-                        is_tournament_over=is_last_game
+                        last_action_text=f"Game {current_game_num} dimenangkan oleh {seat_names[w]}!",
+                        is_tournament_over=is_last_game,
+                        leaderboard_names=canonical_names,
+                        leaderboard_wins=canonical_wins,
+                        leaderboard_scores=canonical_scores,
+                        seat_shuffle_banner=shuffle_banner
                     )
 
         if not running:
             break
 
-    # Determine Champion based on total_scores (Fair tournament points), then total_wins
-    champ_idx = max(range(4), key=lambda i: (total_scores[i], total_wins[i]))
+    # Determine Champion based on canonical_scores, then canonical_wins
+    champ_idx = max(range(4), key=lambda i: (canonical_scores[i], canonical_wins[i]))
     print("\n" + "=" * 65)
-    print("HASIL AKHIR TURNAMEN 10 GAME (SISTEM SKOR ADIL)")
+    print(f"HASIL AKHIR TURNAMEN {num_games} GAME (SISTEM SKOR ADIL + SEAT ROTATION)")
     print("=" * 65)
-    print_scoreboard(player_names, total_wins, total_scores, num_games, num_games)
+    print_scoreboard(canonical_names, canonical_wins, canonical_scores, num_games, num_games)
     print("*" * 65)
-    print(f"🏆 JUARA UTAMA TURNAMEN ADALAH: {player_names[champ_idx].upper()}! 🏆")
-    print(f"Meraih {total_scores[champ_idx]} Poin Turnamen dengan {total_wins[champ_idx]} Kemenangan Game dari {num_games} Game!")
+    print(f"🏆 JUARA UTAMA TURNAMEN ADALAH: {canonical_names[champ_idx].upper()}! 🏆")
+    print(f"Meraih {canonical_scores[champ_idx]} Poin Turnamen dengan {canonical_wins[champ_idx]} Kemenangan Game dari {num_games} Game!")
     print("*" * 65 + "\n")
 
     if screenshot_dir:
         spectator.save_screenshot(os.path.join(screenshot_dir, "tournament_final_champion.png"))
 
     spectator.close()
-    return champ_idx, total_wins, total_scores
+    return champ_idx, canonical_wins, canonical_scores
 
 
 if __name__ == "__main__":
@@ -287,6 +342,7 @@ if __name__ == "__main__":
     parser.add_argument("--headless", action="store_true", help="Jalankan tanpa jendela GUI")
     parser.add_argument("--screenshots", type=str, default=None, help="Direktori penyimpanan screenshot")
     parser.add_argument("--seed", type=int, default=None, help="Random seed (default: None untuk pengacakan alami)")
+    parser.add_argument("--shuffle-freq", type=int, default=5, help="Frekuensi pengacakan tempat duduk dalam jumlah ronde (default: 5)")
     args = parser.parse_args()
 
     run_spectator_simulation(
@@ -296,5 +352,6 @@ if __name__ == "__main__":
         model_path=args.model if os.path.exists(args.model) else None,
         headless=args.headless,
         screenshot_dir=args.screenshots,
-        seed=args.seed
+        seed=args.seed,
+        shuffle_freq=args.shuffle_freq
     )

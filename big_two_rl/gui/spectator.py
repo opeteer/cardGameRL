@@ -329,12 +329,20 @@ class BigTwoSpectator:
         current_game: int = 1,
         total_games: int = 10,
         last_action_text: Optional[str] = None,
-        is_tournament_over: bool = False
+        is_tournament_over: bool = False,
+        leaderboard_names: Optional[List[str]] = None,
+        leaderboard_wins: Optional[List[int]] = None,
+        leaderboard_scores: Optional[List[int]] = None,
+        seat_shuffle_banner: Optional[str] = None
     ):
         """Render full game frame from game_state with live scoreboard."""
         names = player_names or DEFAULT_PLAYER_NAMES
         w_list = wins or [0, 0, 0, 0]
         s_list = scores or [0, 0, 0, 0]
+
+        lead_names = leaderboard_names or names
+        lead_w = leaderboard_wins if leaderboard_wins is not None else w_list
+        lead_s = leaderboard_scores if leaderboard_scores is not None else s_list
 
         # 1. Background Casino Table
         self.screen.fill(COLOR_BG)
@@ -356,8 +364,17 @@ class BigTwoSpectator:
         lbl_ctrl = self.font_tiny.render(ctrl_txt, True, (200, 200, 200))
         self.screen.blit(lbl_ctrl, (25, self.height - 18))
 
-        # 3. Draw Scoreboard in Top-Left
-        self.draw_scoreboard(names, w_list, s_list, current_game, total_games)
+        # Optional Seat Shuffle Notification Banner
+        if seat_shuffle_banner:
+            shuff_surface = self.font_tiny.render(seat_shuffle_banner, True, COLOR_CYAN)
+            shuff_rect = shuff_surface.get_rect(center=(self.width // 2, 8))
+            bg_rect = shuff_rect.inflate(14, 4)
+            pygame.draw.rect(self.screen, (15, 30, 45), bg_rect, border_radius=6)
+            pygame.draw.rect(self.screen, COLOR_CYAN, bg_rect, width=1, border_radius=6)
+            self.screen.blit(shuff_surface, shuff_rect)
+
+        # 3. Draw Scoreboard in Top-Left (Always tracks individual agents)
+        self.draw_scoreboard(lead_names, lead_w, lead_s, current_game, total_games)
 
         # 4. Draw 4 Hands
         for p in range(4):
@@ -389,12 +406,12 @@ class BigTwoSpectator:
 
             if is_tournament_over:
                 # Tournament Champion announcement by total scores, tie-break by wins
-                champ_idx = max(range(4), key=lambda i: (s_list[i], w_list[i]))
-                title_txt = f"🏆 JUARA TURNAMEN: {names[champ_idx].upper()}! 🏆"
+                champ_idx = max(range(4), key=lambda i: (lead_s[i], lead_w[i]))
+                title_txt = f"🏆 JUARA TURNAMEN: {lead_names[champ_idx].upper()}! 🏆"
                 win_text = self.font_title.render(title_txt, True, COLOR_GOLD)
                 self.screen.blit(win_text, win_text.get_rect(center=(self.width // 2, dy + 40)))
 
-                sub_txt = f"Total Poin Tertinggi: {s_list[champ_idx]} pt ({w_list[champ_idx]} Kemenangan)"
+                sub_txt = f"Total Poin Tertinggi: {lead_s[champ_idx]} pt ({lead_w[champ_idx]} Kemenangan)"
                 sub_lbl = self.font_med.render(sub_txt, True, COLOR_WHITE)
                 self.screen.blit(sub_lbl, sub_lbl.get_rect(center=(self.width // 2, dy + 75)))
             else:
@@ -409,7 +426,7 @@ class BigTwoSpectator:
             p_lbl = self.font_small.render(payoff_str, True, COLOR_CYAN)
             self.screen.blit(p_lbl, p_lbl.get_rect(center=(self.width // 2, dy + 120)))
 
-            total_str = f"Total Poin Turnamen: {names[0]}: {s_list[0]} pt | {names[1]}: {s_list[1]} pt | {names[2]}: {s_list[2]} pt | {names[3]}: {s_list[3]} pt"
+            total_str = f"Total Poin Turnamen: {lead_names[0]}: {lead_s[0]} pt | {lead_names[1]}: {lead_s[1]} pt | {lead_names[2]}: {lead_s[2]} pt | {lead_names[3]}: {lead_s[3]} pt"
             t_lbl = self.font_small.render(total_str, True, COLOR_WHITE)
             self.screen.blit(t_lbl, t_lbl.get_rect(center=(self.width // 2, dy + 155)))
 
