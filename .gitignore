@@ -22,6 +22,8 @@ eggs/
 
 # Logs & Temporary Files
 *.log
+checkpoints/league/
+checkpoints/multi_agent/
 scratch/
 .system_generated/
 

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Simultaneous Multi-Agent PPO Training Pipeline for Big Two (Capsa Banting).
-Trains 4 separate neural network policies (Curt, Albert, Sullivan, Bernstein)
-concurrently on NVIDIA GPU using Maskable Actor-Critic Policy and Invalid Action Masking.
+Simultaneous Multi-Agent PPO Training Pipeline for Capsa Banting (Big Two).
+Trains 4 neural network policies (Curt, Albert, Sullivan, Bernstein)
+playing the game together using MaskableActorCritic [512, 512, 256] ELU LayerNorm,
+Potential-Based Reward Shaping (PBRS), Anti-Feeding Constraints, and Dynamic Elo Tracking.
 """
 import os
 import sys
 import time
+import random
 import argparse
 from typing import Dict, List, Any, Optional, Tuple
 from collections import defaultdict, deque
@@ -14,28 +16,52 @@ from collections import defaultdict, deque
 import numpy as np
 import torch
 import torch.nn as nn
-from gymnasium import spaces
-from sb3_contrib.common.maskable.policies import MaskableActorCriticPolicy
-from sb3_contrib import MaskablePPO
+from torch.distributions import Categorical
 
 from big_two_rl.env.big_two_env import raw_env
 from big_two_rl.env.actions import NUM_ACTIONS
 from big_two_rl.env.observation import OBS_DIM
-from big_two_rl.engine.card import card_to_str
-
+from big_two_rl.models.maskable_actor_critic import MaskableActorCritic
 
 AGENT_NAMES = ["Curt", "Albert", "Sullivan", "Bernstein"]
 
 
-class TrajectoryBuffer:
+class MultiAgentEloTracker:
+    """Tracks dynamic Elo ratings between all 4 playing agents."""
+    def __init__(self, initial_elo: float = 1200.0, k_factor: float = 32.0):
+        self.k_factor = k_factor
+        self.ratings: List[float] = [initial_elo] * 4
+
+    def record_game(self, winner_seat: int):
+        # Update pairwise against other 3 players
+        delta_elo = [0.0] * 4
+        for i in range(4):
+            for j in range(4):
+                if i == j:
+                    continue
+                exp_i = 1.0 / (1.0 + 10.0 ** ((self.ratings[j] - self.ratings[i]) / 400.0))
+                if winner_seat == i:
+                    actual_i = 1.0
+                elif winner_seat == j:
+                    actual_i = 0.0
+                else:
+                    actual_i = 0.5  # Neither won
+                delta_elo[i] += (self.k_factor / 3.0) * (actual_i - exp_i)
+
+        for i in range(4):
+            self.ratings[i] += delta_elo[i]
+
+
+class MultiAgentTrajectoryBuffer:
     """
     Trajectory tracker for an individual player across multiple parallel environments.
-    Computes Generalized Advantage Estimation (GAE) per episode trajectory before flattening.
+    Computes Generalized Advantage Estimation (GAE) per episode trajectory before batching.
     """
     def __init__(self, player_idx: int):
         self.player_idx = player_idx
-        # env_id -> list of transition dicts
+        # env_id -> list of transition dicts for active episode
         self.active_trajectories: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+        # Completed transitions ready for batch extraction
         self.ready_transitions: List[Dict[str, Any]] = []
 
     def add_step(
@@ -43,21 +69,21 @@ class TrajectoryBuffer:
         env_id: int,
         obs: np.ndarray,
         action: int,
+        mask: np.ndarray,
         value: float,
-        log_prob: float,
-        mask: np.ndarray
+        log_prob: float
     ):
         self.active_trajectories[env_id].append({
             "obs": obs,
             "action": action,
+            "mask": mask,
             "value": value,
             "log_prob": log_prob,
-            "mask": mask,
             "reward": 0.0,
             "done": False,
         })
 
-    def add_reward(self, env_id: int, reward: float):
+    def add_step_reward(self, env_id: int, reward: float):
         if self.active_trajectories[env_id]:
             self.active_trajectories[env_id][-1]["reward"] += reward
 
@@ -65,7 +91,7 @@ class TrajectoryBuffer:
         self,
         env_id: int,
         terminal_reward: float,
-        gamma: float = 0.99,
+        gamma: float = 0.995,
         gae_lambda: float = 0.95
     ):
         traj = self.active_trajectories.pop(env_id, [])
@@ -75,10 +101,10 @@ class TrajectoryBuffer:
         traj[-1]["reward"] += terminal_reward
         traj[-1]["done"] = True
 
-        # Compute GAE within this trajectory
+        # Compute GAE within this player's episodic trajectory
         k = len(traj)
-        advantages = [0.0] * k
-        returns = [0.0] * k
+        advantages = np.zeros(k, dtype=np.float32)
+        returns = np.zeros(k, dtype=np.float32)
         last_gae = 0.0
         next_val = 0.0
 
@@ -101,31 +127,42 @@ class TrajectoryBuffer:
     def size(self) -> int:
         return len(self.ready_transitions)
 
-    def extract_ready_batch(self) -> Optional[Dict[str, np.ndarray]]:
-        if not self.ready_transitions:
+    def extract_ready_batch(self, device: torch.device) -> Optional[Dict[str, torch.Tensor]]:
+        if len(self.ready_transitions) < 128:
             return None
 
         transitions = self.ready_transitions
         self.ready_transitions = []
 
+        obs_arr = np.array([t["obs"] for t in transitions], dtype=np.float32)
+        act_arr = np.array([t["action"] for t in transitions], dtype=np.int64)
+        mask_arr = np.array([t["mask"] for t in transitions], dtype=bool)
+        lp_arr = np.array([t["log_prob"] for t in transitions], dtype=np.float32)
+        ret_arr = np.array([t["return"] for t in transitions], dtype=np.float32)
+        adv_arr = np.array([t["advantage"] for t in transitions], dtype=np.float32)
+
+        # Normalize advantages
+        adv_mean = adv_arr.mean()
+        adv_std = adv_arr.std()
+        adv_norm = (adv_arr - adv_mean) / (adv_std + 1e-8)
+
         return {
-            "obs": np.array([t["obs"] for t in transitions], dtype=np.float32),
-            "actions": np.array([t["action"] for t in transitions], dtype=np.int64),
-            "masks": np.array([t["mask"] for t in transitions], dtype=bool),
-            "log_probs": np.array([t["log_prob"] for t in transitions], dtype=np.float32),
-            "values": np.array([t["value"] for t in transitions], dtype=np.float32),
-            "advantages": np.array([t["advantage"] for t in transitions], dtype=np.float32),
-            "returns": np.array([t["return"] for t in transitions], dtype=np.float32),
+            "obs": torch.as_tensor(obs_arr, dtype=torch.float32, device=device),
+            "actions": torch.as_tensor(act_arr, dtype=torch.int64, device=device),
+            "masks": torch.as_tensor(mask_arr, dtype=torch.bool, device=device),
+            "log_probs": torch.as_tensor(lp_arr, dtype=torch.float32, device=device),
+            "returns": torch.as_tensor(ret_arr, dtype=torch.float32, device=device),
+            "advantages": torch.as_tensor(adv_norm, dtype=torch.float32, device=device),
         }
 
 
 def ppo_update_agent(
-    policy: MaskableActorCriticPolicy,
+    policy: MaskableActorCritic,
     optimizer: torch.optim.Optimizer,
-    batch: Dict[str, np.ndarray],
+    batch: Dict[str, torch.Tensor],
     device: torch.device,
     n_epochs: int = 4,
-    batch_size: int = 256,
+    minibatch_size: int = 256,
     clip_range: float = 0.2,
     ent_coef: float = 0.01,
     vf_coef: float = 0.5,
@@ -134,65 +171,61 @@ def ppo_update_agent(
     """
     Perform PPO policy & value function update for one agent over minibatches.
     """
-    obs_t = torch.as_tensor(batch["obs"], dtype=torch.float32, device=device)
-    actions_t = torch.as_tensor(batch["actions"], dtype=torch.int64, device=device)
-    masks_t = torch.as_tensor(batch["masks"], dtype=torch.bool, device=device)
-    old_log_probs_t = torch.as_tensor(batch["log_probs"], dtype=torch.float32, device=device)
-    returns_t = torch.as_tensor(batch["returns"], dtype=torch.float32, device=device)
-    advantages_t = torch.as_tensor(batch["advantages"], dtype=torch.float32, device=device)
+    b_obs = batch["obs"]
+    b_actions = batch["actions"]
+    b_masks = batch["masks"]
+    b_old_log_probs = batch["log_probs"]
+    b_returns = batch["returns"]
+    b_advantages = batch["advantages"]
 
-    # Normalize advantages
-    adv_mean = advantages_t.mean()
-    adv_std = advantages_t.std()
-    advantages_t = (advantages_t - adv_mean) / (adv_std + 1e-8)
-
-    total_samples = len(obs_t)
-    indices = np.arange(total_samples)
+    n_samples = len(b_obs)
+    indices = np.arange(n_samples)
 
     total_pi_loss = 0.0
     total_vf_loss = 0.0
     total_ent = 0.0
     num_updates = 0
 
+    policy.train()
     for _ in range(n_epochs):
         np.random.shuffle(indices)
-        for start_idx in range(0, total_samples, batch_size):
-            end_idx = min(start_idx + batch_size, total_samples)
+        for start_idx in range(0, n_samples, minibatch_size):
+            end_idx = min(start_idx + minibatch_size, n_samples)
             mb_idx = indices[start_idx:end_idx]
 
-            mb_obs = obs_t[mb_idx]
-            mb_actions = actions_t[mb_idx]
-            mb_masks = masks_t[mb_idx]
-            mb_old_log_probs = old_log_probs_t[mb_idx]
-            mb_returns = returns_t[mb_idx]
-            mb_advantages = advantages_t[mb_idx]
+            mb_obs = b_obs[mb_idx]
+            mb_actions = b_actions[mb_idx]
+            mb_masks = b_masks[mb_idx]
+            mb_old_log_probs = b_old_log_probs[mb_idx]
+            mb_returns = b_returns[mb_idx]
+            mb_advantages = b_advantages[mb_idx]
 
-            # Forward pass through policy
-            dist = policy.get_distribution(mb_obs, action_masks=mb_masks)
-            log_prob = dist.log_prob(mb_actions)
-            entropy = dist.entropy().mean()
-            values = policy.predict_values(mb_obs).flatten()
+            values, log_probs, entropy = policy.evaluate_actions(
+                mb_obs, mb_actions, action_masks=mb_masks
+            )
 
-            # PPO Clipped Surrogate Loss
-            ratio = torch.exp(log_prob - mb_old_log_probs)
+            # PPO Clipped Surrogate Objective
+            ratio = torch.exp(log_probs - mb_old_log_probs)
             surr1 = ratio * mb_advantages
             surr2 = torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range) * mb_advantages
-            policy_loss = -torch.min(surr1, surr2).mean()
+            pi_loss = -torch.min(surr1, surr2).mean()
 
-            # Value Loss
-            value_loss = 0.5 * (values - mb_returns).pow(2).mean()
+            # Value Function Loss
+            vf_loss = 0.5 * (values - mb_returns).pow(2).mean()
 
-            # Total Loss
-            loss = policy_loss + vf_coef * value_loss - ent_coef * entropy
+            # Entropy Regularization
+            ent_loss = -ent_coef * entropy.mean()
+
+            loss = pi_loss + vf_coef * vf_loss + ent_loss
 
             optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
             optimizer.step()
 
-            total_pi_loss += policy_loss.item()
-            total_vf_loss += value_loss.item()
-            total_ent += entropy.item()
+            total_pi_loss += pi_loss.item()
+            total_vf_loss += vf_loss.item()
+            total_ent += entropy.mean().item()
             num_updates += 1
 
     if num_updates > 0:
@@ -201,35 +234,40 @@ def ppo_update_agent(
 
 
 def evaluate_agents(
-    policies: List[MaskableActorCriticPolicy],
-    num_games: int = 50,
+    policies: List[MaskableActorCritic],
+    num_games: int = 100,
     device: torch.device = torch.device("cpu")
 ) -> Tuple[List[float], List[float]]:
     """
     Evaluate the 4 trained policies playing against each other in round-robin evaluation.
     """
-    env = raw_env()
+    env = raw_env(use_pbrs_reward=False, enforce_anti_feed=True)
     wins = [0] * 4
     total_payoffs = [0.0] * 4
 
+    for p in range(4):
+        policies[p].eval()
+
     for g in range(num_games):
-        env.reset(seed=5000 + g)
+        env.reset(seed=10000 + g)
         while not env.game_state.game_over:
             curr_agent = env.agent_selection
             p_idx = env.agent_name_to_idx[curr_agent]
             obs = env.observe(curr_agent)
             mask = env.action_mask(curr_agent, as_int8=False)
 
-            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-            mask_t = torch.as_tensor(mask, dtype=torch.bool, device=device).unsqueeze(0)
+            obs_t = torch.as_tensor(obs[np.newaxis, :], dtype=torch.float32, device=device)
+            mask_t = torch.as_tensor(mask[np.newaxis, :], dtype=torch.bool, device=device)
 
             with torch.no_grad():
-                dist = policies[p_idx].get_distribution(obs_t, action_masks=mask_t)
-                # Deterministic action for evaluation
-                action = int(torch.argmax(dist.distribution.logits).item())
-                if not mask[action]:
-                    legal = np.where(mask)[0]
-                    action = int(np.random.choice(legal)) if len(legal) > 0 else 0
+                act_t, _, _, _ = policies[p_idx].get_action(
+                    obs_t, action_masks=mask_t, deterministic=True
+                )
+                action = int(act_t.item())
+
+            if not mask[action]:
+                legal = np.where(mask)[0]
+                action = int(np.random.choice(legal)) if len(legal) > 0 else 0
 
             env.step(action)
 
@@ -249,310 +287,331 @@ def train_multi_agent(
     total_timesteps: int = 1000000,
     num_envs: int = 32,
     rollout_steps: int = 2048,
+    minibatch_size: int = 256,
+    n_epochs: int = 4,
+    lr: float = 2.5e-4,
+    gamma: float = 0.995,
+    gae_lambda: float = 0.95,
+    clip_range: float = 0.2,
+    entropy_start: float = 0.05,
+    entropy_end: float = 0.001,
+    save_freq: int = 200000,
     checkpoints_dir: str = "checkpoints",
-    learning_rate: float = 3e-4,
-    device_str: str = "cuda",
-    warm_start_path: Optional[str] = "checkpoints/final_model.zip",
-    eval_games: int = 50,
-    save_freq: int = 100000,
-    seed: int = 42
+    device_str: str = "auto",
+    eval_games: int = 100,
+    seed: int = 42,
+    warm_start: bool = True,
 ):
-    print("=" * 70)
-    print("Multi-Agent Simultaneous PPO Training Pipeline (Big Two / Capsa Banting)")
-    print("=" * 70)
-    print(f"Target Timesteps:  {total_timesteps:,}")
-    print(f"Parallel Envs:     {num_envs}")
-    print(f"Rollout Steps:     {rollout_steps}")
-    print(f"Save Frequency:    {save_freq:,}")
-    print(f"Checkpoints Dir:   {checkpoints_dir}")
+    print("=" * 75)
+    print("PELATIHAN 4 AGEN SECARA SIMULTAN (MULTI-AGENT PPO BIG TWO)")
+    print("=" * 75)
+    print(f"Total Timesteps:     {total_timesteps:,}")
+    print(f"Parallel Games:      {num_envs}")
+    print(f"Rollout Steps/Agent: {rollout_steps}")
+    print(f"Mini-batch Size:     {minibatch_size}")
+    print(f"Epochs per Update:   {n_epochs}")
+    print(f"Learning Rate:       {lr}")
+    print(f"Discount (gamma):    {gamma} (PBRS horizon preservation)")
+    print(f"Entropy Annealing:   {entropy_start} -> {entropy_end}")
+    print(f"Checkpoints Dir:     {checkpoints_dir}")
 
     # Configure compute device
-    if device_str == "cuda" and torch.cuda.is_available():
+    if device_str == "auto":
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    elif device_str == "cuda" and torch.cuda.is_available():
         device = torch.device("cuda:0")
-        device_name = torch.cuda.get_device_name(0)
     else:
         device = torch.device("cpu")
-        device_name = "CPU"
-    print(f"Compute Device:    {device} ({device_name})")
-    print(f"Agents (4):        Curt (0), Albert (1), Sullivan (2), Bernstein (3)")
-    print("=" * 70)
+    device_name = torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU"
+    print(f"Compute Device:      {device} ({device_name})")
+    print(f"4 Agen:              Curt (0), Albert (1), Sullivan (2), Bernstein (3)")
+    print("=" * 75)
 
     os.makedirs(checkpoints_dir, exist_ok=True)
-    os.makedirs(os.path.join(checkpoints_dir, "multi_agent"), exist_ok=True)
+    multi_agent_dir = os.path.join(checkpoints_dir, "multi_agent")
+    os.makedirs(multi_agent_dir, exist_ok=True)
 
-    obs_space = spaces.Box(low=0.0, high=1.0, shape=(OBS_DIM,), dtype=np.float32)
-    act_space = spaces.Discrete(NUM_ACTIONS)
-
-    # 1. Instantiate 4 separate MaskableActorCriticPolicy models
-    policies: List[MaskableActorCriticPolicy] = []
+    # 1. Instantiate 4 separate MaskableActorCritic policies
+    policies: List[MaskableActorCritic] = []
     optimizers: List[torch.optim.Optimizer] = []
-    buffers: List[TrajectoryBuffer] = []
-
-    # Optional warm start template
-    warm_template = None
-    if warm_start_path and os.path.exists(warm_start_path):
-        print(f"\n[Warm Start] Loading pre-trained base model weights from: {warm_start_path}")
-        warm_template = MaskablePPO.load(warm_start_path, device="cpu")
+    buffers: List[MultiAgentTrajectoryBuffer] = []
+    elo_tracker = MultiAgentEloTracker()
 
     for p in range(4):
-        policy = MaskableActorCriticPolicy(
-            observation_space=obs_space,
-            action_space=act_space,
-            lr_schedule=lambda _: learning_rate,
-            net_arch=dict(pi=[256, 256], vf=[256, 256]),
-            activation_fn=nn.ReLU
-        ).to(device)
+        name = AGENT_NAMES[p]
+        policy = MaskableActorCritic(obs_dim=OBS_DIM, action_dim=NUM_ACTIONS).to(device)
 
-        if warm_template is not None:
-            policy.load_state_dict(warm_template.policy.state_dict())
-            print(f"  -> Agent {AGENT_NAMES[p]} ({p}) diinisialisasi dari pre-trained checkpoint.")
+        # Warm start from existing checkpoint if available
+        loaded = False
+        if warm_start:
+            p_path = os.path.join(checkpoints_dir, f"{name.lower()}_model.pt")
+            if os.path.exists(p_path):
+                try:
+                    loaded_m = MaskableActorCritic.load(p_path, device=str(device))
+                    policy.load_state_dict(loaded_m.state_dict())
+                    print(f"  -> Agen {name} diinisialisasi dari: {p_path}")
+                    loaded = True
+                except Exception as e:
+                    print(f"  -> Gagal memuat {p_path}: {e}")
 
-        optimizer = torch.optim.Adam(policy.parameters(), lr=learning_rate, eps=1e-5)
+            if not loaded:
+                gm_path = os.path.join(checkpoints_dir, "grandmaster_model.pt")
+                if os.path.exists(gm_path):
+                    try:
+                        loaded_m = MaskableActorCritic.load(gm_path, device=str(device))
+                        policy.load_state_dict(loaded_m.state_dict())
+                        print(f"  -> Agen {name} diinisialisasi dari base: {gm_path}")
+                        loaded = True
+                    except Exception:
+                        pass
+
+        if not loaded:
+            print(f"  -> Agen {name} diinisialisasi dari bobot acak (orthogonal init).")
+
+        optimizer = torch.optim.Adam(policy.parameters(), lr=lr, eps=1e-5)
         policies.append(policy)
         optimizers.append(optimizer)
-        buffers.append(TrajectoryBuffer(p))
+        buffers.append(MultiAgentTrajectoryBuffer(p))
 
-    # 2. Initialize Vectorized Parallel Environments
-    envs = [raw_env() for _ in range(num_envs)]
+    # 2. Initialize Parallel Environments
+    envs = [raw_env(use_pbrs_reward=True, enforce_anti_feed=True) for _ in range(num_envs)]
     for e_idx, env in enumerate(envs):
-        env.reset(seed=seed + e_idx * 17)
+        env.reset(seed=seed + e_idx * 31)
 
     # Metrics Tracking
     total_steps = 0
     total_games = 0
     last_saved_step = 0
     start_time = time.time()
-    last_log_time = start_time
-    recent_winners = deque(maxlen=200)
-    recent_payoffs = [deque(maxlen=200) for _ in range(4)]
+    recent_winners = deque(maxlen=300)
+    recent_payoffs = [deque(maxlen=300) for _ in range(4)]
 
-    print(f"\nMemulai simulasi permainan paralel & pelatihan 4 agen di {device_name}...")
+    print(f"\nMemulai simulasi permainan bersama 4 agen di {device_name}...")
 
-    # Main Multi-Agent Environment Step Loop
+    # Main Environment Simulation Loop
     while total_steps < total_timesteps:
-        # Step through environments in batched player groups
-        groups = defaultdict(list)
-        for e_idx, env in enumerate(envs):
-            if env.game_state.game_over:
-                # Record game completion & reset
-                w = env.game_state.winner
-                if w is not None:
-                    recent_winners.append(w)
-                payoffs = env.game_state.get_payoffs()
-                for p in range(4):
-                    recent_payoffs[p].append(payoffs[p])
-                    buffers[p].finish_trajectory(e_idx, terminal_reward=float(payoffs[p]))
-                total_games += 1
-                env.reset(seed=seed + total_games * 19 + e_idx)
+        # Linear dynamic entropy annealing
+        progress = float(total_steps) / float(total_timesteps)
+        current_ent_coef = entropy_start - progress * (entropy_start - entropy_end)
 
+        # 1. Group active envs by current agent for batched inference
+        groups = defaultdict(list)
+        for e_i, env in enumerate(envs):
             curr_agent = env.agent_selection
             p_idx = env.agent_name_to_idx[curr_agent]
             obs = env.observe(curr_agent)
             mask = env.action_mask(curr_agent, as_int8=False)
-            groups[p_idx].append((e_idx, obs, mask))
+            groups[p_idx].append((e_i, curr_agent, obs, mask))
 
-        # Batched inference per player group on GPU
+        # 2. Batched inference per player group
         for p_idx, items in groups.items():
             if not items:
                 continue
 
             e_indices = [x[0] for x in items]
-            obs_batch = np.array([x[1] for x in items], dtype=np.float32)
-            mask_batch = np.array([x[2] for x in items], dtype=bool)
+            obs_batch = np.array([x[2] for x in items], dtype=np.float32)
+            mask_batch = np.array([x[3] for x in items], dtype=bool)
 
             obs_t = torch.as_tensor(obs_batch, dtype=torch.float32, device=device)
             mask_t = torch.as_tensor(mask_batch, dtype=torch.bool, device=device)
 
+            policies[p_idx].eval()
             with torch.no_grad():
-                dist = policies[p_idx].get_distribution(obs_t, action_masks=mask_t)
-                actions = dist.sample()
-                values = policies[p_idx].predict_values(obs_t).flatten()
-                log_probs = dist.log_prob(actions)
+                act_t, val_t, lp_t, _ = policies[p_idx].get_action(
+                    obs_t, action_masks=mask_t, deterministic=False
+                )
 
-            actions_np = actions.cpu().numpy()
-            values_np = values.cpu().numpy()
-            log_probs_np = log_probs.cpu().numpy()
+            actions = act_t.cpu().numpy()
+            values = val_t.cpu().numpy()
+            log_probs = lp_t.cpu().numpy()
 
-            # Execute actions in environments and log transitions
             for i, e_i in enumerate(e_indices):
-                act = int(actions_np[i])
+                act = int(actions[i])
+                val = float(values[i])
+                lp = float(log_probs[i])
+                env = envs[e_i]
+                curr_agent = items[i][1]
+
+                # Action mask safety guard
+                if not mask_batch[i][act]:
+                    legal = np.where(mask_batch[i])[0]
+                    act = int(np.random.choice(legal)) if len(legal) > 0 else 0
+
+                # Record transition before step
                 buffers[p_idx].add_step(
                     env_id=e_i,
                     obs=obs_batch[i],
                     action=act,
-                    value=float(values_np[i]),
-                    log_prob=float(log_probs_np[i]),
-                    mask=mask_batch[i]
+                    mask=mask_batch[i],
+                    value=val,
+                    log_prob=lp
                 )
 
-                # Prior cards count to compute shedding reward
-                cards_before = len(envs[e_i].game_state.hands[p_idx])
-                envs[e_i].step(act)
-                cards_after = len(envs[e_i].game_state.hands[p_idx])
-
-                # Dense card shedding bonus (+0.1 per card discarded)
-                cards_played = cards_before - cards_after
-                if cards_played > 0:
-                    buffers[p_idx].add_reward(e_i, 0.1 * cards_played)
-
+                # Step environment
+                env.step(act)
                 total_steps += 1
 
-        # Check if rollout buffer has enough ready transitions for training update
-        min_buffer_size = min(buffers[p].size() for p in range(4))
-        if min_buffer_size >= rollout_steps:
-            # PPO Updates for all 4 agents
+                # Check game completion
+                if env.game_state.game_over:
+                    total_games += 1
+                    winner = env.game_state.winner
+                    if winner is not None:
+                        recent_winners.append(winner)
+                        elo_tracker.record_game(winner)
+
+                    # Finish episodic trajectories for all 4 agents
+                    for p in range(4):
+                        agent_key = f"player_{p}"
+                        term_r = float(env.rewards[agent_key])
+                        recent_payoffs[p].append(term_r)
+                        buffers[p].finish_trajectory(
+                            env_id=e_i,
+                            terminal_reward=term_r,
+                            gamma=gamma,
+                            gae_lambda=gae_lambda
+                        )
+
+                    # Reset finished game environment
+                    env.reset(seed=seed + total_games * 29 + e_i)
+                else:
+                    # Intermediate step: assign step reward (PBRS / tactical penalty)
+                    step_r = float(env.rewards[curr_agent])
+                    buffers[p_idx].add_step_reward(env_id=e_i, reward=step_r)
+
+                if total_steps >= total_timesteps:
+                    break
+
+            if total_steps >= total_timesteps:
+                break
+
+        # 3. PPO Update when all 4 agents have accumulated enough transitions
+        min_buf = min(buffers[p].size() for p in range(4))
+        if min_buf >= rollout_steps:
             loss_stats = []
             for p in range(4):
-                batch = buffers[p].extract_ready_batch()
-                if batch is not None and len(batch["obs"]) >= 128:
-                    pi_loss, vf_loss, ent = ppo_update_agent(
+                batch = buffers[p].extract_ready_batch(device=device)
+                if batch is not None:
+                    pi_l, vf_l, ent = ppo_update_agent(
                         policy=policies[p],
                         optimizer=optimizers[p],
                         batch=batch,
                         device=device,
-                        n_epochs=4,
-                        batch_size=256,
-                        clip_range=0.2,
-                        ent_coef=0.01,
-                        vf_coef=0.5
+                        n_epochs=n_epochs,
+                        minibatch_size=minibatch_size,
+                        clip_range=clip_range,
+                        ent_coef=current_ent_coef,
+                        vf_coef=0.5,
+                        max_grad_norm=0.5
                     )
-                    loss_stats.append((pi_loss, vf_loss, ent))
+                    loss_stats.append((pi_l, vf_l, ent))
 
             # Logging metrics
-            curr_time = time.time()
-            elapsed = curr_time - start_time
+            elapsed = time.time() - start_time
             sps = total_steps / max(1.0, elapsed)
-
-            win_counts = [recent_winners.count(p) for p in range(4)]
-            total_recent = max(1, len(recent_winners))
-            win_rates = [w / total_recent for w in win_counts]
-            avg_recent_payoffs = [
-                np.mean(recent_payoffs[p]) if len(recent_payoffs[p]) > 0 else 0.0
-                for p in range(4)
-            ]
+            total_rec = max(1, len(recent_winners))
+            wr = [recent_winners.count(p) / total_rec * 100.0 for p in range(4)]
+            r_elo = elo_tracker.ratings
 
             print(
                 f"[{elapsed:6.1f}s | {total_steps:7,}/{total_timesteps:,} steps | {sps:4.0f} step/s | {total_games:5,} games] "
-                f"Win: Curt {win_rates[0]*100:4.1f}% | Albert {win_rates[1]*100:4.1f}% | "
-                f"Sullivan {win_rates[2]*100:4.1f}% | Bernstein {win_rates[3]*100:4.1f}%"
+                f"WR: Curt {wr[0]:4.1f}% | Alb {wr[1]:4.1f}% | Sul {wr[2]:4.1f}% | Ber {wr[3]:4.1f}% | "
+                f"Elo: {r_elo[0]:4.0f}/{r_elo[1]:4.0f}/{r_elo[2]:4.0f}/{r_elo[3]:4.0f}"
             )
 
-        # Periodic checkpoint save
+        # 4. Periodic Checkpoint Saving
         if total_steps - last_saved_step >= save_freq:
             last_saved_step = total_steps
-            print(f"\n>>> Menyimpan Checkpoint Multi-Agent pada {total_steps:,} langkah...")
-            save_multi_agent_models(
-                policies=policies,
-                save_dir=os.path.join(checkpoints_dir, "multi_agent"),
-                step_suffix=f"step_{total_steps // 1000}k",
-                template_path=warm_start_path
-            )
+            snap_tag = f"step_{total_steps // 1000}k"
+            print(f"\n>>> Menyimpan Checkpoint Multi-Agent ({snap_tag})...")
+            for p in range(4):
+                agent_name = AGENT_NAMES[p].lower()
+                snap_path = os.path.join(multi_agent_dir, f"{agent_name}_{snap_tag}.pt")
+                policies[p].save(snap_path)
+                print(f"  -> {AGENT_NAMES[p]}: {snap_path}")
 
     elapsed_total = time.time() - start_time
-    print("\n" + "=" * 70)
-    print(f"Multi-Agent Training Selesai dalam {elapsed_total:.2f} detik ({total_steps / elapsed_total:.0f} step/s)!")
-    print(f"Total Games Dimainkan: {total_games:,}")
-    print("=" * 70)
+    print("\n" + "=" * 75)
+    print(f"Pelatihan Multi-Agent Selesai dalam {elapsed_total:.2f} detik ({total_steps / elapsed_total:.0f} step/s)!")
+    print(f"Total Pertandingan Dimainkan: {total_games:,}")
+    print(f"Final Elo Ratings: Curt={elo_tracker.ratings[0]:.0f}, Albert={elo_tracker.ratings[1]:.0f}, "
+          f"Sullivan={elo_tracker.ratings[2]:.0f}, Bernstein={elo_tracker.ratings[3]:.0f}")
+    print("=" * 75)
 
-    # Save final distinct models for all 4 agents
-    print("\nMenyimpan model final independen untuk ke-4 agen:")
-    final_paths = save_multi_agent_models(
-        policies=policies,
-        save_dir=checkpoints_dir,
-        step_suffix="model",
-        template_path=warm_start_path
-    )
-    for name, pth in final_paths.items():
-        print(f"  - {name}: {pth}")
+    # 5. Save Final Models for All 4 Agents
+    print("\nMenyimpan model final PyTorch [512, 512, 256] ELU untuk ke-4 agen:")
+    final_paths = {}
+    for p in range(4):
+        agent_name = AGENT_NAMES[p].lower()
+        out_pt = os.path.join(checkpoints_dir, f"{agent_name}_model.pt")
+        policies[p].save(out_pt)
+        final_paths[AGENT_NAMES[p]] = out_pt
+        print(f"  - {AGENT_NAMES[p]}: {out_pt}")
 
-    # Run Round-Robin Evaluation
+    # Determine highest Elo agent as champion
+    best_p = int(np.argmax(elo_tracker.ratings))
+    best_name = AGENT_NAMES[best_p]
+    gm_path = os.path.join(checkpoints_dir, "grandmaster_model.pt")
+    final_m_path = os.path.join(checkpoints_dir, "final_model.pt")
+    policies[best_p].save(gm_path)
+    policies[best_p].save(final_m_path)
+    print(f"\nModel Juara (Champion: {best_name}, Elo: {elo_tracker.ratings[best_p]:.0f}) disinkronkan ke:")
+    print(f"  -> {gm_path}")
+    print(f"  -> {final_m_path}")
+
+    # 6. Final Round-Robin Tournament Evaluation
     if eval_games > 0:
-        print("\n" + "-" * 70)
-        print(f"Evaluasi Round-Robin 4 Agen Mandiri ({eval_games} Game)...")
-        eval_win_rates, eval_payoffs = evaluate_agents(
-            policies=policies,
-            num_games=eval_games,
-            device=device
-        )
-        print("Hasil Evaluasi:")
-        for p in range(4):
-            print(
-                f"  [{AGENT_NAMES[p]}] Win Rate: {eval_win_rates[p]*100:5.1f}% | "
-                f"Avg Payoff: {eval_payoffs[p]:+6.2f} pt/game"
-            )
-        print("-" * 70)
+        print("\n" + "-" * 75)
+        print(f"EVALUASI TURNAMEN ROUND-ROBIN KE-4 AGEN ({eval_games} Pertandingan Mandiri)...")
+        eval_wr, eval_pay = evaluate_agents(policies, num_games=eval_games, device=device)
+        print(f"{'Peringkat':<10} | {'Nama Pemain':<15} | {'Win Rate':<12} | {'Rata-rata Skor/Game':<20}")
+        print("-" * 65)
+
+        rank_order = sorted(range(4), key=lambda i: (eval_wr[i], eval_pay[i]), reverse=True)
+        for rank, p in enumerate(rank_order, 1):
+            crown = "👑 " if rank == 1 else "   "
+            print(f"{crown}#{rank:<5} | {AGENT_NAMES[p]:<15} | {eval_wr[p]*100:6.1f}%     | {eval_pay[p]:+6.2f} pt")
+        print("-" * 75)
 
     return policies
 
 
-def save_multi_agent_models(
-    policies: List[MaskableActorCriticPolicy],
-    save_dir: str,
-    step_suffix: str = "model",
-    template_path: Optional[str] = "checkpoints/final_model.zip"
-) -> Dict[str, str]:
-    """
-    Save 4 distinct agent models as SB3-compatible MaskablePPO zip files.
-    """
-    os.makedirs(save_dir, exist_ok=True)
-    file_map = {
-        "Curt": f"curt_{step_suffix}.zip",
-        "Albert": f"albert_{step_suffix}.zip",
-        "Sullivan": f"sullivan_{step_suffix}.zip",
-        "Bernstein": f"bernstein_{step_suffix}.zip",
-    }
-    saved_paths = {}
-
-    # Load template to ensure exact SB3 metadata and structure
-    if template_path and os.path.exists(template_path):
-        template = MaskablePPO.load(template_path, device="cpu")
-    else:
-        # Fallback dummy env
-        from big_two_rl.training.train_ppo import make_single_env
-        template = MaskablePPO(
-            policy=MaskableActorCriticPolicy,
-            env=make_single_env()(),
-            device="cpu"
-        )
-
-    for p in range(4):
-        name = AGENT_NAMES[p]
-        filename = file_map[name]
-        out_path = os.path.join(save_dir, filename)
-        # Copy policy state dict to template (on CPU)
-        template.policy.load_state_dict(policies[p].cpu().state_dict())
-        template.save(out_path)
-        saved_paths[name] = out_path
-        # Move back to cuda if policy was on cuda
-        if torch.cuda.is_available():
-            policies[p].to("cuda")
-
-    return saved_paths
-
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Simultaneous Multi-Agent PPO Training for Big Two")
+    parser = argparse.ArgumentParser(description="Multi-Agent PPO Training for Big Two (Capsa Banting)")
     parser.add_argument("--timesteps", type=int, default=1000000, help="Total environment timesteps (default: 1,000,000)")
     parser.add_argument("--num-envs", type=int, default=32, help="Number of parallel environments (default: 32)")
     parser.add_argument("--rollout-steps", type=int, default=2048, help="Rollout steps per player before PPO update")
-    parser.add_argument("--checkpoints-dir", type=str, default="checkpoints", help="Directory for checkpoints")
-    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
-    parser.add_argument("--device", type=str, default="cuda", help="Compute device (cuda, cpu)")
-    parser.add_argument("--warm-start", type=str, default="checkpoints/final_model.zip", help="Warm start model path")
-    parser.add_argument("--eval-games", type=int, default=50, help="Number of evaluation games")
-    parser.add_argument("--save-freq", type=int, default=100000, help="Checkpoint frequency")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--minibatch-size", type=int, default=256, help="Minibatch size for PPO update")
+    parser.add_argument("--epochs", type=int, default=4, help="Epochs per PPO update (default: 4)")
+    parser.add_argument("--lr", type=float, default=2.5e-4, help="Learning rate (default: 2.5e-4)")
+    parser.add_argument("--gamma", type=float, default=0.995, help="Discount factor (default: 0.995)")
+    parser.add_argument("--gae-lambda", type=float, default=0.95, help="GAE lambda (default: 0.95)")
+    parser.add_argument("--clip-range", type=float, default=0.2, help="PPO clip range (default: 0.2)")
+    parser.add_argument("--entropy-start", type=float, default=0.05, help="Initial entropy coef (default: 0.05)")
+    parser.add_argument("--entropy-end", type=float, default=0.001, help="Final entropy coef (default: 0.001)")
+    parser.add_argument("--save-freq", type=int, default=200000, help="Checkpoint frequency (default: 200,000)")
+    parser.add_argument("--checkpoints-dir", type=str, default="checkpoints", help="Checkpoints directory")
+    parser.add_argument("--device", type=str, default="auto", help="Compute device (auto, cuda, cpu)")
+    parser.add_argument("--eval-games", type=int, default=100, help="Evaluation games count (default: 100)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
+    parser.add_argument("--no-warm-start", action="store_true", help="Do not load pre-existing checkpoint weights")
     args = parser.parse_args()
 
     train_multi_agent(
         total_timesteps=args.timesteps,
         num_envs=args.num_envs,
         rollout_steps=args.rollout_steps,
-        checkpoints_dir=args.checkpoints_dir,
-        learning_rate=args.lr,
-        device_str=args.device,
-        warm_start_path=args.warm_start if os.path.exists(args.warm_start) else None,
-        eval_games=args.eval_games,
+        minibatch_size=args.minibatch_size,
+        n_epochs=args.epochs,
+        lr=args.lr,
+        gamma=args.gamma,
+        gae_lambda=args.gae_lambda,
+        clip_range=args.clip_range,
+        entropy_start=args.entropy_start,
+        entropy_end=args.entropy_end,
         save_freq=args.save_freq,
-        seed=args.seed
+        checkpoints_dir=args.checkpoints_dir,
+        device_str=args.device,
+        eval_games=args.eval_games,
+        seed=args.seed,
+        warm_start=not args.no_warm_start
     )
