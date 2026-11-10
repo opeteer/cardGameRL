@@ -54,10 +54,11 @@ class BigTwoSpectator:
         pygame.init()
         pygame.font.init()
 
-        if not self.headless:
+        try:
             self.screen = pygame.display.set_mode((self.width, self.height))
-            pygame.display.set_caption(self.title)
-        else:
+            if not self.headless:
+                pygame.display.set_caption(self.title)
+        except Exception:
             self.screen = pygame.Surface((self.width, self.height))
 
         self.clock = pygame.time.Clock()
@@ -74,6 +75,27 @@ class BigTwoSpectator:
         # Card dimensions
         self.card_w = 46
         self.card_h = 68
+
+        # Agent Profile Pictures (Avatars & Framed Portraits)
+        self.portraits_dir = os.path.join(os.path.dirname(__file__), "assets", "portraits")
+        self.avatars: Dict[str, pygame.Surface] = {}
+        self.framed_portraits: Dict[str, pygame.Surface] = {}
+        for name in ["curt", "albert", "sullivan", "bernstein"]:
+            cap = name.capitalize()
+            av_p = os.path.join(self.portraits_dir, f"{name}_avatar.png")
+            pt_p = os.path.join(self.portraits_dir, f"{name}.png")
+            if os.path.exists(av_p):
+                try:
+                    surf = pygame.image.load(av_p)
+                    self.avatars[cap] = surf.convert_alpha() if pygame.display.get_surface() else surf
+                except Exception:
+                    pass
+            if os.path.exists(pt_p):
+                try:
+                    surf = pygame.image.load(pt_p)
+                    self.framed_portraits[cap] = surf.convert_alpha() if pygame.display.get_surface() else surf
+                except Exception:
+                    pass
 
     def handle_events(self) -> bool:
         """
@@ -174,7 +196,7 @@ class BigTwoSpectator:
         total_games: int
     ):
         """Draw Tournament Leaderboard HUD in top-left corner."""
-        sb_x, sb_y, sb_w, sb_h = 35, 30, 235, 145
+        sb_x, sb_y, sb_w, sb_h = 35, 30, 260, 150
         # Background card with border
         pygame.draw.rect(self.screen, (18, 32, 22), (sb_x, sb_y, sb_w, sb_h), border_radius=10)
         pygame.draw.rect(self.screen, COLOR_BORDER, (sb_x, sb_y, sb_w, sb_h), width=2, border_radius=10)
@@ -190,17 +212,27 @@ class BigTwoSpectator:
         # Rows for Curt, Albert, Sullivan, Bernstein
         max_w = max(wins) if max(wins) > 0 else -1
         for i in range(4):
-            y_pos = sb_y + 34 + i * 26
+            y_pos = sb_y + 34 + i * 28
             is_leader = (wins[i] == max_w and max_w > 0)
             col = COLOR_GOLD if is_leader else COLOR_WHITE
             prefix = "👑 " if is_leader else "• "
-            name_str = f"{prefix}{player_names[i]}"
+            agent_name = player_names[i]
+            name_str = f"{prefix}{agent_name}"
             score_str = f"{wins[i]} W | {scores[i]} pt"
+
+            # Draw small avatar icon if available
+            av = self.avatars.get(agent_name)
+            if av:
+                av_scaled = pygame.transform.smoothscale(av, (22, 22))
+                self.screen.blit(av_scaled, (sb_x + 8, y_pos + 1))
+                text_x = sb_x + 34
+            else:
+                text_x = sb_x + 8
 
             lbl_name = self.font_tiny.render(name_str, True, col)
             lbl_score = self.font_tiny.render(score_str, True, col)
-            self.screen.blit(lbl_name, (sb_x + 8, y_pos))
-            self.screen.blit(lbl_score, (sb_x + sb_w - lbl_score.get_width() - 8, y_pos))
+            self.screen.blit(lbl_name, (text_x, y_pos + 4))
+            self.screen.blit(lbl_score, (sb_x + sb_w - lbl_score.get_width() - 8, y_pos + 4))
 
     def draw_hand(self, player_idx: int, hand: Sequence[int], is_active: bool, has_passed: bool, player_names: List[str]):
         """Render a player's hand at their designated table position."""
@@ -247,6 +279,19 @@ class BigTwoSpectator:
         lbl = self.font_med.render(info_text, True, txt_col)
         badge_rect = lbl.get_rect(center=badge_pos)
         pad_rect = badge_rect.inflate(16, 6)
+
+        # Draw player avatar circle beside badge
+        p_name = player_names[player_idx]
+        av = self.avatars.get(p_name)
+        if av:
+            av_size = 32
+            av_scaled = pygame.transform.smoothscale(av, (av_size, av_size))
+            av_x = max(8, pad_rect.left - av_size - 6)
+            av_y = pad_rect.centery - av_size // 2
+            self.screen.blit(av_scaled, (av_x, av_y))
+            if is_active:
+                pygame.draw.circle(self.screen, COLOR_CYAN, (av_x + av_size // 2, av_y + av_size // 2), av_size // 2 + 2, width=2)
+
         pygame.draw.rect(self.screen, bg_col, pad_rect, border_radius=10)
         if is_active:
             pygame.draw.rect(self.screen, COLOR_CYAN, pad_rect, width=2, border_radius=10)
@@ -398,41 +443,67 @@ class BigTwoSpectator:
             overlay.fill((0, 0, 0, 160))
             self.screen.blit(overlay, (0, 0))
 
-            dialog_w, dialog_h = 560, 270
+            dialog_w, dialog_h = 620, 270
             dx = (self.width - dialog_w) // 2
             dy = (self.height - dialog_h) // 2
-            pygame.draw.rect(self.screen, (25, 45, 30), (dx, dy, dialog_w, dialog_h), border_radius=15)
-            pygame.draw.rect(self.screen, COLOR_GOLD, (dx, dy, dialog_w, dialog_h), width=3, border_radius=15)
+            pygame.draw.rect(self.screen, (22, 40, 28), (dx, dy, dialog_w, dialog_h), border_radius=16)
+            pygame.draw.rect(self.screen, COLOR_GOLD, (dx, dy, dialog_w, dialog_h), width=3, border_radius=16)
+
+            # Determine winner agent name for portrait display
+            if is_tournament_over:
+                champ_idx = max(range(4), key=lambda i: (lead_s[i], lead_w[i]))
+                winner_name = lead_names[champ_idx]
+            else:
+                champ_idx = None
+                winner_name = names[w]
+
+            # Render framed portrait on the left side of dialog if available
+            framed = self.framed_portraits.get(winner_name)
+            if framed:
+                port_w, port_h = 140, 182
+                port_x = dx + 26
+                port_y = dy + (dialog_h - port_h) // 2
+                framed_scaled = pygame.transform.smoothscale(framed, (port_w, port_h))
+                self.screen.blit(framed_scaled, (port_x, port_y))
+                pygame.draw.rect(self.screen, COLOR_GOLD, (port_x, port_y, port_w, port_h), width=2, border_radius=4)
+                content_cx = dx + 176 + (dialog_w - 186) // 2
+            else:
+                content_cx = self.width // 2
 
             if is_tournament_over:
-                # Tournament Champion announcement by total scores, tie-break by wins
-                champ_idx = max(range(4), key=lambda i: (lead_s[i], lead_w[i]))
-                title_txt = f"🏆 JUARA TURNAMEN: {lead_names[champ_idx].upper()}! 🏆"
-                win_text = self.font_title.render(title_txt, True, COLOR_GOLD)
-                self.screen.blit(win_text, win_text.get_rect(center=(self.width // 2, dy + 40)))
+                title_txt = "🏆 JUARA TURNAMEN 🏆"
+                win_text = self.font_large.render(title_txt, True, COLOR_GOLD)
+                self.screen.blit(win_text, win_text.get_rect(center=(content_cx, dy + 36)))
 
-                sub_txt = f"Total Poin Tertinggi: {lead_s[champ_idx]} pt ({lead_w[champ_idx]} Kemenangan)"
-                sub_lbl = self.font_med.render(sub_txt, True, COLOR_WHITE)
-                self.screen.blit(sub_lbl, sub_lbl.get_rect(center=(self.width // 2, dy + 75)))
+                name_lbl = self.font_title.render(f"{winner_name.upper()}!", True, COLOR_WHITE)
+                self.screen.blit(name_lbl, name_lbl.get_rect(center=(content_cx, dy + 68)))
+
+                sub_txt = f"Total Poin: {lead_s[champ_idx]} pt ({lead_w[champ_idx]} Kemenangan)"
+                sub_lbl = self.font_med.render(sub_txt, True, COLOR_CYAN)
+                self.screen.blit(sub_lbl, sub_lbl.get_rect(center=(content_cx, dy + 102)))
             else:
-                win_text = self.font_large.render(f"Pemenang Game {current_game}: {names[w]}!", True, COLOR_GOLD)
-                self.screen.blit(win_text, win_text.get_rect(center=(self.width // 2, dy + 45)))
+                title_txt = f"PEMENANG GAME {current_game}"
+                win_text = self.font_large.render(title_txt, True, COLOR_GOLD)
+                self.screen.blit(win_text, win_text.get_rect(center=(content_cx, dy + 36)))
 
-            if round_scores is not None:
-                payoff_str = f"Poin Game Ini: {names[0]}: +{round_scores[0]} | {names[1]}: +{round_scores[1]} | {names[2]}: +{round_scores[2]} | {names[3]}: +{round_scores[3]}"
-            else:
-                payoffs = game_state.get_payoffs()
-                payoff_str = f"Poin Ronde: {names[0]}: {payoffs[0]:+d} | {names[1]}: {payoffs[1]:+d} | {names[2]}: {payoffs[2]:+d} | {names[3]}: {payoffs[3]:+d}"
-            p_lbl = self.font_small.render(payoff_str, True, COLOR_CYAN)
-            self.screen.blit(p_lbl, p_lbl.get_rect(center=(self.width // 2, dy + 120)))
+                name_lbl = self.font_title.render(f"{winner_name}!", True, COLOR_WHITE)
+                self.screen.blit(name_lbl, name_lbl.get_rect(center=(content_cx, dy + 68)))
 
-            total_str = f"Total Poin Turnamen: {lead_names[0]}: {lead_s[0]} pt | {lead_names[1]}: {lead_s[1]} pt | {lead_names[2]}: {lead_s[2]} pt | {lead_names[3]}: {lead_s[3]} pt"
+                if round_scores is not None:
+                    payoff_str = f"Poin Game: {names[0]}: +{round_scores[0]} | {names[1]}: +{round_scores[1]} | {names[2]}: +{round_scores[2]} | {names[3]}: +{round_scores[3]}"
+                else:
+                    payoffs = game_state.get_payoffs()
+                    payoff_str = f"Poin Ronde: {names[0]}: {payoffs[0]:+d} | {names[1]}: {payoffs[1]:+d} | {names[2]}: {payoffs[2]:+d} | {names[3]}: {payoffs[3]:+d}"
+                p_lbl = self.font_small.render(payoff_str, True, COLOR_CYAN)
+                self.screen.blit(p_lbl, p_lbl.get_rect(center=(content_cx, dy + 106)))
+
+            total_str = f"Total Skor: {lead_names[0]}: {lead_s[0]} pt | {lead_names[1]}: {lead_s[1]} pt | {lead_names[2]}: {lead_s[2]} pt | {lead_names[3]}: {lead_s[3]} pt"
             t_lbl = self.font_small.render(total_str, True, COLOR_WHITE)
-            self.screen.blit(t_lbl, t_lbl.get_rect(center=(self.width // 2, dy + 155)))
+            self.screen.blit(t_lbl, t_lbl.get_rect(center=(content_cx, dy + 144)))
 
             hint_txt = "Turnamen selesai!" if is_tournament_over else "Menyiapkan game berikutnya..."
             hint = self.font_tiny.render(hint_txt, True, (200, 200, 200))
-            self.screen.blit(hint, hint.get_rect(center=(self.width // 2, dy + 225)))
+            self.screen.blit(hint, hint.get_rect(center=(content_cx, dy + 225)))
 
         if not self.headless:
             pygame.display.flip()
