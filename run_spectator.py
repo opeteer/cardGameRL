@@ -84,7 +84,8 @@ def run_spectator_simulation(
     screenshot_dir: str = None,
     player_names: list = None,
     seed: Optional[int] = None,
-    shuffle_freq: int = 5
+    shuffle_freq: int = 5,
+    summary_json: Optional[str] = None
 ):
     canonical_names = list(player_names) if player_names else list(DEFAULT_PLAYER_NAMES)
 
@@ -196,49 +197,51 @@ def run_spectator_simulation(
         print("-" * 65)
 
         last_action_text = f"{seat_names[start_p]} wajib membuka dengan 3♦"
-        spectator.render_state(
-            env.game_state,
-            player_names=seat_names,
-            wins=canonical_wins,
-            scores=canonical_scores,
-            current_game=current_game_num,
-            total_games=num_games,
-            last_action_text=last_action_text,
-            leaderboard_names=canonical_names,
-            leaderboard_wins=canonical_wins,
-            leaderboard_scores=canonical_scores,
-            seat_shuffle_banner=shuffle_banner,
-            luck_scores=canonical_luck,
-            round_luck_scores=seat_round_lucks,
-            leaderboard_luck=canonical_luck
-        )
+        if not headless or screenshot_dir:
+            spectator.render_state(
+                env.game_state,
+                player_names=seat_names,
+                wins=canonical_wins,
+                scores=canonical_scores,
+                current_game=current_game_num,
+                total_games=num_games,
+                last_action_text=last_action_text,
+                leaderboard_names=canonical_names,
+                leaderboard_wins=canonical_wins,
+                leaderboard_scores=canonical_scores,
+                seat_shuffle_banner=shuffle_banner,
+                luck_scores=canonical_luck,
+                round_luck_scores=seat_round_lucks,
+                leaderboard_luck=canonical_luck
+            )
 
         running = True
         while running and not env.game_state.game_over:
-            # 1. Check window events
-            if not spectator.handle_events():
-                running = False
-                break
+            # 1. Check window events (only if GUI window active)
+            if not headless:
+                if not spectator.handle_events():
+                    running = False
+                    break
 
-            # 2. Handle pause
-            if spectator.paused:
-                spectator.render_state(
-                    env.game_state,
-                    player_names=seat_names,
-                    wins=canonical_wins,
-                    scores=canonical_scores,
-                    current_game=current_game_num,
-                    total_games=num_games,
-                    last_action_text=last_action_text,
-                    leaderboard_names=canonical_names,
-                    leaderboard_wins=canonical_wins,
-                    leaderboard_scores=canonical_scores,
-                    seat_shuffle_banner=shuffle_banner,
-                    luck_scores=canonical_luck,
-                    round_luck_scores=seat_round_lucks,
-                    leaderboard_luck=canonical_luck
-                )
-                continue
+                # 2. Handle pause
+                if spectator.paused:
+                    spectator.render_state(
+                        env.game_state,
+                        player_names=seat_names,
+                        wins=canonical_wins,
+                        scores=canonical_scores,
+                        current_game=current_game_num,
+                        total_games=num_games,
+                        last_action_text=last_action_text,
+                        leaderboard_names=canonical_names,
+                        leaderboard_wins=canonical_wins,
+                        leaderboard_scores=canonical_scores,
+                        seat_shuffle_banner=shuffle_banner,
+                        luck_scores=canonical_luck,
+                        round_luck_scores=seat_round_lucks,
+                        leaderboard_luck=canonical_luck
+                    )
+                    continue
 
             current_agent = env.agent_selection
             p_idx = env.agent_name_to_idx[current_agent]
@@ -272,30 +275,7 @@ def run_spectator_simulation(
 
             # 5. Step Environment
             env.step(action)
-            spectator.render_state(
-                env.game_state,
-                player_names=seat_names,
-                wins=canonical_wins,
-                scores=canonical_scores,
-                current_game=current_game_num,
-                total_games=num_games,
-                last_action_text=last_action_text,
-                leaderboard_names=canonical_names,
-                leaderboard_wins=canonical_wins,
-                leaderboard_scores=canonical_scores,
-                seat_shuffle_banner=shuffle_banner,
-                luck_scores=canonical_luck,
-                round_luck_scores=seat_round_lucks,
-                leaderboard_luck=canonical_luck
-            )
-
-            # 6. Paced delay while processing interactive events
-            delay_start = time.time()
-            effective_delay = max(0.05, step_delay / (spectator.fps / 2.0))
-            while time.time() - delay_start < effective_delay:
-                if not spectator.handle_events():
-                    running = False
-                    break
+            if not headless or screenshot_dir:
                 spectator.render_state(
                     env.game_state,
                     player_names=seat_names,
@@ -312,6 +292,32 @@ def run_spectator_simulation(
                     round_luck_scores=seat_round_lucks,
                     leaderboard_luck=canonical_luck
                 )
+
+            # 6. Paced delay while processing interactive events (only if step_delay > 0)
+            if step_delay > 0:
+                delay_start = time.time()
+                effective_delay = max(0.01, step_delay / (spectator.fps / 2.0))
+                while time.time() - delay_start < effective_delay:
+                    if not spectator.handle_events():
+                        running = False
+                        break
+                    if not headless or screenshot_dir:
+                        spectator.render_state(
+                            env.game_state,
+                            player_names=seat_names,
+                            wins=canonical_wins,
+                            scores=canonical_scores,
+                            current_game=current_game_num,
+                            total_games=num_games,
+                            last_action_text=last_action_text,
+                            leaderboard_names=canonical_names,
+                            leaderboard_wins=canonical_wins,
+                            leaderboard_scores=canonical_scores,
+                            seat_shuffle_banner=shuffle_banner,
+                            luck_scores=canonical_luck,
+                            round_luck_scores=seat_round_lucks,
+                            leaderboard_luck=canonical_luck
+                        )
 
         # Game ended
         if env.game_state.game_over:
@@ -339,8 +345,8 @@ def run_spectator_simulation(
                 shot_name = f"tournament_game_{current_game_num}.png"
                 spectator.save_screenshot(os.path.join(screenshot_dir, shot_name))
 
-            # Display round end dialog
-            if running:
+            # Display round end dialog (only if step_delay > 0)
+            if running and step_delay > 0:
                 end_timer = time.time()
                 pause_time = 3.5 if is_last_game else (0.6 if num_games >= 50 else 1.2)
                 while time.time() - end_timer < pause_time:
@@ -392,6 +398,25 @@ def run_spectator_simulation(
     if screenshot_dir:
         spectator.save_screenshot(os.path.join(screenshot_dir, "tournament_final_champion.png"))
 
+    if summary_json:
+        import json
+        summary_data = {
+            "num_games": num_games,
+            "players": canonical_names,
+            "wins": canonical_wins,
+            "scores": canonical_scores,
+            "total_luck": canonical_luck,
+            "avg_luck": [round(canonical_luck[i] / max(1, num_games), 2) for i in range(4)],
+            "champion": canonical_names[champ_idx],
+            "champion_wins": canonical_wins[champ_idx],
+            "champion_score": canonical_scores[champ_idx],
+            "luckiest": canonical_names[luckiest_idx],
+            "luckiest_score": canonical_luck[luckiest_idx],
+        }
+        with open(summary_json, "w") as f:
+            json.dump(summary_data, f, indent=2)
+        print(f">>> Ringkasan turnamen berhasil disimpan ke: {summary_json}")
+
     spectator.close()
     return champ_idx, canonical_wins, canonical_scores, canonical_luck
 
@@ -406,6 +431,7 @@ if __name__ == "__main__":
     parser.add_argument("--screenshots", type=str, default=None, help="Direktori penyimpanan screenshot")
     parser.add_argument("--seed", type=int, default=None, help="Random seed (default: None untuk pengacakan alami)")
     parser.add_argument("--shuffle-freq", type=int, default=5, help="Frekuensi pengacakan tempat duduk dalam jumlah ronde (default: 5)")
+    parser.add_argument("--summary-json", type=str, default=None, help="Path file JSON untuk menyimpan ringkasan hasil turnamen")
     args = parser.parse_args()
 
     run_spectator_simulation(
@@ -416,5 +442,6 @@ if __name__ == "__main__":
         headless=args.headless,
         screenshot_dir=args.screenshots,
         seed=args.seed,
-        shuffle_freq=args.shuffle_freq
+        shuffle_freq=args.shuffle_freq,
+        summary_json=args.summary_json
     )
