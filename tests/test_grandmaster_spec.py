@@ -297,13 +297,14 @@ class TestObservation326:
         # 1. Self Hand Strength [308:312]
         # obs[308]: Self Initial Luck in [0, 1]
         assert 0.0 <= obs[308] <= 1.0
-        # obs[311]: Penalty danger (13 cards -> Critical Hazard 1.0)
-        assert obs[311] == 1.0
+        # obs[311]: Indikator Kartu 2 di tangan sendiri (count_twos / 4.0 in [0, 1])
+        n_twos_seat0 = sum(1 for c in gs.hands[0] if get_rank(c) == 12)
+        assert obs[311] == float(n_twos_seat0 / 4.0)
 
-        # Change hand to 5 cards -> Penalty danger must drop to 0.0
-        gs.hands[0] = [10, 11, 12, 13, 14]
+        # Set hand with exactly two 2s (rank 12)
+        gs.hands[0] = [48, 51]  # 2♦ and 2♠
         obs2 = encode_observation(gs, 0)
-        assert obs2[311] == 0.0
+        assert obs2[311] == 0.5  # 2 twos out of 4 = 0.5
 
         # 2. Global Power Depletion [312:314]
         assert obs[312] > 0.0

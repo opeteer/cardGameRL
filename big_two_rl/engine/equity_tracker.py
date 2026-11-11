@@ -130,17 +130,11 @@ class DynamicEquityTracker:
             vec[1] = float(np.clip(cur_strength / 150.0, 0.0, 1.0))
             steps, _ = compute_hand_partition_metrics(tuple(sorted(self_hand)))
             vec[2] = float(np.clip(steps / 13.0, 0.0, 1.0))
+            # Indikator Kartu 2 di tangan sendiri (terlatih secara natural, tanpa anti-freeze buatan)
+            vec[3] = float(self_twos / 4.0)
         else:
             vec[1] = 0.0
             vec[2] = 0.0
-
-        # Penalty hazard indicator S_4
-        n_self_cards = len(self_hand)
-        if n_self_cards >= 10:
-            vec[3] = 1.0  # Critical Penalty Evacuation Zone!
-        elif n_self_cards >= 8:
-            vec[3] = 0.5  # Approaching Penalty Zone
-        else:
             vec[3] = 0.0
 
         # 2. Global Power Depletion [4:6]
