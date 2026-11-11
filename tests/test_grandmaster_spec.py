@@ -184,13 +184,13 @@ class TestRewardEnginePBRS:
         assert details.get("bonus_intercept") == 2.0, "Must trigger BONUS_INTERCEPT (+2.0)"
 
 
-class TestObservation308:
+class TestObservation326:
     def test_observation_dimensions_and_features(self):
         gs = GameState()
         gs.reset(seed=42)
         obs = encode_observation(gs, 0)
-        assert obs.shape == (308,)
-        assert OBS_DIM == 308
+        assert obs.shape == (326,)
+        assert OBS_DIM == 326
         # Range checks
         assert np.all(obs >= 0.0)
         assert np.all(obs <= 1.0)
@@ -235,7 +235,7 @@ class TestObservation308:
         gs.reset(seed=42)
         # Curt (seat 0) observes table
         obs = encode_observation(gs, 0, profile_manager=profiler)
-        assert obs.shape == (308,)
+        assert obs.shape == (326,)
 
         # Left player is seat 1 (Albert): identity one-hot [260:264] has Albert=1.0 (index 1)
         assert obs[260] == 0.0  # Curt
@@ -278,6 +278,7 @@ class TestObservation308:
         gs = GameState()
         gs.reset(seed=42)
         obs = encode_observation(gs, 0, profile_manager=profiler)
+        assert obs.shape == (326,)
 
         # Right opponent is Sullivan: profile slice [292:308]
         # obs[298] (vec[6] of Right Profile) is Curt's positional loss rate when Sullivan is on his right
@@ -285,11 +286,43 @@ class TestObservation308:
         # obs[299] (vec[7] of Right Profile) is Sullivan's win rate when on the right of Curt
         assert obs[299] == 0.8, f"Expected 80% win rate for Sullivan on Curt's right, got {obs[299]}"
 
+    def test_dynamic_hand_strength_and_equity_tracking(self):
+        gs = GameState()
+        gs.reset(seed=42)
+        obs = encode_observation(gs, 0)
+        assert obs.shape == (326,)
+        assert np.all(obs >= 0.0)
+        assert np.all(obs <= 1.0)
+
+        # 1. Self Hand Strength [308:312]
+        # obs[308]: Self Initial Luck in [0, 1]
+        assert 0.0 <= obs[308] <= 1.0
+        # obs[311]: Penalty danger (13 cards -> Critical Hazard 1.0)
+        assert obs[311] == 1.0
+
+        # Change hand to 5 cards -> Penalty danger must drop to 0.0
+        gs.hands[0] = [10, 11, 12, 13, 14]
+        obs2 = encode_observation(gs, 0)
+        assert obs2[311] == 0.0
+
+        # 2. Global Power Depletion [312:314]
+        assert obs[312] > 0.0
+        assert obs[313] > 0.0
+
+        # 3. Opponent demonstrated power [314:326]
+        # Simulate Left player (seat 1) playing a 2 of Spades (card 51)
+        gs.equity_tracker.record_play(1, [51])
+        obs3 = encode_observation(gs, 0)
+        # Left opponent demonstrated luck [314] > 0
+        assert obs3[314] > 0.0
+        # Left opponent twos revealed [315] == 0.25 (1 two played / 4)
+        assert obs3[315] == 0.25
+
 
 class TestMaskableActorCriticArchitecture:
     def test_network_shapes_and_masked_logits(self):
-        model = MaskableActorCritic(obs_dim=308, action_dim=1696)
-        obs_t = torch.randn(4, 308)
+        model = MaskableActorCritic(obs_dim=326, action_dim=1696)
+        obs_t = torch.randn(4, 326)
         mask_t = torch.zeros(4, 1696, dtype=torch.bool)
         mask_t[:, :5] = True  # Only actions 0..4 legal
 
@@ -300,9 +333,9 @@ class TestMaskableActorCriticArchitecture:
         assert (actions < 5).all(), "All sampled actions must be <= 4"
 
     def test_dynamic_shape_adapter_backward_compatibility(self):
-        # A legacy model initialized with obs_dim=234 must accept 308-dim obs seamlessly
+        # A legacy model initialized with obs_dim=234 must accept 326-dim obs seamlessly
         legacy_model = MaskableActorCritic(obs_dim=234, action_dim=1696)
-        obs_new = torch.randn(2, 308)
+        obs_new = torch.randn(2, 326)
         mask_t = torch.ones(2, 1696, dtype=torch.bool)
         actions, values, log_probs, _ = legacy_model.get_action(obs_new, action_masks=mask_t)
         assert actions.shape == (2,)

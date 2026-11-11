@@ -127,8 +127,8 @@ class raw_env(AECEnv):
 
     def observe(self, agent: str) -> np.ndarray:
         """
-        Return the 308-dim float32 observation vector for the specified agent,
-        including bilateral adjacent player profiles.
+        Return the 326-dim float32 observation vector for the specified agent,
+        including bilateral adjacent player profiles and Dynamic Hand Strength & Opponent Equity.
         """
         p_idx = self.agent_name_to_idx[agent]
         return encode_observation(self.game_state, p_idx, profile_manager=self.profile_manager)

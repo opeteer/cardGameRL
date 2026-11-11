@@ -46,9 +46,10 @@ from big_two_rl.engine.evaluator import (
     get_optimal_partition_steps,
     evaluate_hand,
 )
+from big_two_rl.engine.equity_tracker import DEFAULT_EQUITY_VECTOR_18, EQUITY_FEATURE_DIM
 from big_two_rl.engine.game_state import GameState
 
-OBS_DIM = 308
+OBS_DIM = 326
 OBSERVATION_SPACE = spaces.Box(
     low=0.0, high=1.0, shape=(OBS_DIM,), dtype=np.float32
 )
@@ -68,12 +69,14 @@ DEFAULT_OPPONENT_PROFILE_16 = np.zeros(16, dtype=np.float32)
 def encode_observation(
     game_state: GameState,
     player_idx: int,
-    profile_manager: Optional[Any] = None
+    profile_manager: Optional[Any] = None,
+    equity_tracker: Optional[Any] = None
 ) -> np.ndarray:
     """
     Encode the current game state from the perspective of player_idx
-    into a 308-dimensional float32 vector with bilateral adjacent player awareness
-    and explicit opponent profiling (Left, Right, Opposite).
+    into a 326-dimensional float32 vector with bilateral adjacent player awareness,
+    explicit opponent profiling (Left, Right, Opposite), and Dynamic Hand Strength
+    & Opponent Equity Tracking.
     """
     obs = np.zeros(OBS_DIM, dtype=np.float32)
 
@@ -231,5 +234,25 @@ def encode_observation(
         obs[260:276] = DEFAULT_OPPONENT_PROFILE_16
         obs[276:292] = DEFAULT_OPPONENT_PROFILE_16
         obs[292:308] = DEFAULT_OPPONENT_PROFILE_16
+
+    # 8. [308:326]: Dynamic Hand Strength & Opponent Equity Tracking (18-dim)
+    # [308:312]: Self Hand Strength (Initial luck, current strength, steps, penalty hazard)
+    # [312:314]: Global Power Depletion (Unrevealed 2s, unrevealed Aces)
+    # [314:318]: Left Opponent Equity (Demonstrated luck, 2s played, relative luck diff, threat index)
+    # [318:322]: Opposite Opponent Equity
+    # [322:326]: Right Opponent Equity
+    active_tracker = equity_tracker
+    if active_tracker is None and hasattr(game_state, "equity_tracker") and game_state.equity_tracker is not None:
+        active_tracker = game_state.equity_tracker
+
+    if active_tracker is not None:
+        equity_18 = active_tracker.get_equity_vector(
+            player_idx,
+            game_state.hands,
+            game_state.discard_pile
+        )
+        obs[308:326] = equity_18
+    else:
+        obs[308:326] = DEFAULT_EQUITY_VECTOR_18
 
     return obs

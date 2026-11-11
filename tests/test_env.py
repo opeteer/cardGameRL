@@ -75,8 +75,8 @@ class TestObservation:
         raw.reset(seed=42)
         obs = raw.observe("player_0")
 
-        assert OBS_DIM == 308
-        assert obs.shape == (308,)
+        assert OBS_DIM == 326
+        assert obs.shape == (326,)
         assert obs.dtype == np.float32
         assert np.all(obs >= 0.0)
         assert np.all(obs <= 1.0)

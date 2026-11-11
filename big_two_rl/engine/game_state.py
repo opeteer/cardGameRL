@@ -8,6 +8,7 @@ from typing import List, Tuple, Sequence, Optional, Dict, Set
 import numpy as np
 
 from big_two_rl.engine.card import get_rank, get_suit
+from big_two_rl.engine.equity_tracker import DynamicEquityTracker
 from big_two_rl.engine.evaluator import (
     HandType,
     HandCombo,
@@ -202,6 +203,7 @@ class GameState:
         self.winner: Optional[int] = None
         self.turn_count: int = 0
         self.history: List[Dict[str, Any]] = []
+        self.equity_tracker: DynamicEquityTracker = DynamicEquityTracker()
 
     def reset(self, seed: Optional[int] = None) -> int:
         """
@@ -228,6 +230,7 @@ class GameState:
             sorted(deck[p::4])
             for p in range(4)
         ]
+        self.equity_tracker.reset(self.hands)
         self.discard_pile = []
         self.current_trick_cards = ()
         self.current_trick_combo = None
@@ -320,6 +323,7 @@ class GameState:
             # Player plays cards
             combo = evaluate_hand(move_tuple)
             assert combo is not None, f"Move {move_tuple} is not a valid combination"
+            self.equity_tracker.record_play(p, move_tuple, combo)
 
             # Remove cards from player's hand
             for c in move_tuple:

@@ -193,11 +193,15 @@ class MaskableActorCritic(nn.Module):
     def load(cls, filepath: str, device: str = "cpu") -> "MaskableActorCritic":
         """Load model state dict from disk."""
         checkpoint = torch.load(filepath, map_location=device)
-        model = cls(
-            obs_dim=checkpoint.get("obs_dim", OBS_DIM),
-            action_dim=checkpoint.get("action_dim", NUM_ACTIONS)
-        )
-        model.load_state_dict(checkpoint["state_dict"])
+        if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+            model = cls(
+                obs_dim=checkpoint.get("obs_dim", OBS_DIM),
+                action_dim=checkpoint.get("action_dim", NUM_ACTIONS)
+            )
+            model.load_state_dict(checkpoint["state_dict"])
+        else:
+            model = cls(obs_dim=OBS_DIM, action_dim=NUM_ACTIONS)
+            model.load_state_dict(checkpoint)
         model.to(device)
         model.eval()
         return model
