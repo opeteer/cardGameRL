@@ -196,6 +196,7 @@ class GameState:
         self.trick_lead_player: int = 0
         self.pass_count: int = 0
         self.passes: List[bool] = [False, False, False, False]
+        self.passed_combos: List[Set[HandType]] = [set(), set(), set(), set()]
         self.is_first_turn: bool = True
         self.game_over: bool = False
         self.winner: Optional[int] = None
@@ -232,6 +233,7 @@ class GameState:
         self.current_trick_combo = None
         self.pass_count = 0
         self.passes = [False, False, False, False]
+        self.passed_combos = [set(), set(), set(), set()]
         self.is_first_turn = True
         self.game_over = False
         self.winner = None
@@ -299,6 +301,8 @@ class GameState:
             # Pass
             self.passes[p] = True
             self.pass_count += 1
+            if self.current_trick_combo is not None and self.current_trick_combo.combo_type != HandType.PASS:
+                self.passed_combos[p].add(self.current_trick_combo.combo_type)
             record["trick_reset"] = False
 
             # If 3 consecutive passes occurred, trick is reset

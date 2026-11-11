@@ -64,6 +64,8 @@ class RewardEngine:
         game_state: GameState,
         can_beat_trick: bool,
         lead_regained_by_boss: bool = False,
+        trick_leader_before: Optional[int] = None,
+        is_free_lead_before: bool = False,
     ) -> Tuple[float, Dict[str, float]]:
         """
         Compute total step reward for player_idx:
@@ -90,6 +92,44 @@ class RewardEngine:
             if card_rank < 8:  # Jack is rank index 8
                 details["penalty_feeding"] = -30.0
                 pi_total += -30.0
+
+        # 2b. Tactical Penalty: PENALTY_FEEDING_TIER2 (-12.0)
+        # Playing a low single when downstream has 2 cards and agent holds viable combo options
+        if len(cards_played) == 1 and next_player_cards == 2:
+            card_rank = get_rank(cards_played[0])
+            if card_rank < 8:
+                from collections import Counter
+                rc = Counter(get_rank(c) for c in hand_before)
+                if any(cnt >= 2 for cnt in rc.values()):
+                    details["penalty_feeding_tier2"] = -12.0
+                    pi_total += -12.0
+
+        # 2c. Tactical Bonus: BONUS_COMBO_STARVE (+2.5)
+        # On free lead, playing a combination type that downstream has previously passed
+        if is_free_lead_before and len(cards_played) > 1:
+            played_combo = evaluate_hand(cards_played)
+            passed_set = getattr(game_state, "passed_combos", [set()]*4)[next_player]
+            if played_combo is not None and played_combo.combo_type in passed_set:
+                details["bonus_combo_starve"] = +2.5
+                pi_total += 2.5
+
+        # 2d. Tactical Bonus: BONUS_INTERCEPT (+2.0)
+        # Intercepting trick led by Upstream/Opposite when downstream is in danger (<= 3 cards)
+        if not is_free_lead_before and len(cards_played) > 0:
+            effective_leader = trick_leader_before if trick_leader_before is not None else game_state.trick_lead_player
+            if (effective_leader - player_idx) % 4 in (2, 3) and next_player_cards <= 3:
+                details["bonus_intercept"] = +2.0
+                pi_total += 2.0
+
+        # 2e. Tactical Penalty: PENALTY_CARELESS_PASS (-10.0)
+        # Passing on Upstream lead despite holding power cards when downstream has <= 2 cards
+        if is_pass and can_beat_trick and next_player_cards <= 2:
+            effective_leader = trick_leader_before if trick_leader_before is not None else game_state.trick_lead_player
+            if (effective_leader - player_idx) % 4 in (2, 3):
+                has_power = any(c in boss_cards_before or get_rank(c) == 12 for c in hand_before)
+                if has_power:
+                    details["penalty_careless_pass"] = -10.0
+                    pi_total += -10.0
 
         # 3. Tactical Penalty: PENALTY_COMBO_BREAK (-5.0)
         # Breaking a high 5-card combo (Full House or Quads) into singles without taking boss status

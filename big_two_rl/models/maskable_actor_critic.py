@@ -63,6 +63,15 @@ class MaskableActorCritic(nn.Module):
         nn.init.constant_(self.value_head.bias, 0.0)
 
     def extract_features(self, obs: torch.Tensor) -> torch.Tensor:
+        # Dynamic shape adapter for backward/forward compatibility
+        if obs.shape[-1] > self.obs_dim:
+            obs = obs[..., :self.obs_dim]
+        elif obs.shape[-1] < self.obs_dim:
+            pad_shape = list(obs.shape)
+            pad_shape[-1] = self.obs_dim - obs.shape[-1]
+            pad = torch.zeros(pad_shape, dtype=obs.dtype, device=obs.device)
+            obs = torch.cat([obs, pad], dim=-1)
+
         x = self.act1(self.ln1(self.layer1(obs)))
         x = self.act2(self.ln2(self.layer2(x)))
         x = self.act3(self.ln3(self.layer3(x)))
@@ -153,6 +162,23 @@ class MaskableActorCritic(nn.Module):
         if was_1d:
             return int(actions[0].item()), None
         return actions.cpu().numpy(), None
+
+    def load_state_dict_flexible(self, state_dict: Dict[str, torch.Tensor]):
+        """
+        Load state dict flexibly with automatic weight transfer when obs_dim differs.
+        Copies overlapping features and preserves orthogonal initialization for new features.
+        """
+        own_state = self.state_dict()
+        for name, param in state_dict.items():
+            if name not in own_state:
+                continue
+            if param.shape == own_state[name].shape:
+                own_state[name].copy_(param)
+            elif name == "layer1.weight" and param.shape[0] == own_state[name].shape[0]:
+                min_in = min(param.shape[1], own_state[name].shape[1])
+                own_state[name][:, :min_in].copy_(param[:, :min_in])
+            elif name == "layer1.bias" and param.shape == own_state[name].shape:
+                own_state[name].copy_(param)
 
     def save(self, filepath: str):
         """Save model state dict to disk."""

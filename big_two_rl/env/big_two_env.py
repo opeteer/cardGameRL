@@ -55,11 +55,13 @@ class raw_env(AECEnv):
         render_mode: Optional[str] = None,
         use_pbrs_reward: bool = False,
         enforce_anti_feed: bool = True,
+        profile_manager: Optional[Any] = None,
     ):
         super().__init__()
         self.render_mode = render_mode
         self.use_pbrs_reward = use_pbrs_reward
         self.enforce_anti_feed = enforce_anti_feed
+        self.profile_manager = profile_manager
         self.reward_engine = RewardEngine()
 
         self.possible_agents = [f"player_{i}" for i in range(4)]
@@ -124,10 +126,11 @@ class raw_env(AECEnv):
 
     def observe(self, agent: str) -> np.ndarray:
         """
-        Return the 234-dim float32 observation vector for the specified agent.
+        Return the 308-dim float32 observation vector for the specified agent,
+        including bilateral adjacent player profiles.
         """
         p_idx = self.agent_name_to_idx[agent]
-        return encode_observation(self.game_state, p_idx)
+        return encode_observation(self.game_state, p_idx, profile_manager=self.profile_manager)
 
     def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
         """
@@ -164,12 +167,23 @@ class raw_env(AECEnv):
         boss_before = self.game_state.get_boss_cards(p_idx)
         legal_moves = self.game_state.get_legal_actions(p_idx)
         can_beat = (len(legal_moves) > 1 and () in legal_moves)
+        trick_leader_before = self.game_state.trick_lead_player
+        is_free_lead_before = self.game_state.is_free_lead()
 
         # Convert action_id to card move using current player's hand and legal moves
         cards_move = action_to_cards(action, hand=hand_before, legal_moves=legal_moves)
 
         # Execute move in game state
         game_over, winner = self.game_state.step(cards_move)
+
+        # Update opponent profile statistics if profiler is attached
+        if self.profile_manager is not None:
+            self.profile_manager.record_turn(
+                seat=p_idx,
+                cards_played=cards_move,
+                remaining_cards_before=len(hand_before),
+                can_beat=can_beat
+            )
 
         # Post-step state capture
         hand_after = list(self.game_state.hands[p_idx])
@@ -187,12 +201,30 @@ class raw_env(AECEnv):
                 boss_cards_after=boss_after,
                 game_state=self.game_state,
                 can_beat_trick=can_beat,
-                lead_regained_by_boss=lead_regained
+                lead_regained_by_boss=lead_regained,
+                trick_leader_before=trick_leader_before,
+                is_free_lead_before=is_free_lead_before
             )
             self.rewards[current_agent] = step_r
 
         if game_over:
-            # Game finished: calculate zero-sum terminal payoffs
+            # Game finished: record tournament metrics in profiler
+            if self.profile_manager is not None and winner is not None:
+                from big_two_rl.engine.game_state import calculate_penalty
+                penalties = [
+                    calculate_penalty(
+                        len(self.game_state.hands[p]),
+                        has_2=any(get_rank(c) == 12 for c in self.game_state.hands[p])
+                    )
+                    for p in range(4)
+                ]
+                self.profile_manager.record_round_results(
+                    winner_seat=winner,
+                    remaining_cards_per_seat=[len(self.game_state.hands[p]) for p in range(4)],
+                    penalties_per_seat=penalties
+                )
+
+            # Calculate zero-sum terminal payoffs
             payoffs = self.reward_engine.compute_terminal_payoffs(self.game_state)
             for i, a in enumerate(self.possible_agents):
                 r = float(payoffs[i])

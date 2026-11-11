@@ -347,9 +347,9 @@ def train_multi_agent(
             p_path = os.path.join(checkpoints_dir, f"{name.lower()}_model.pt")
             if os.path.exists(p_path):
                 try:
-                    loaded_m = MaskableActorCritic.load(p_path, device=str(device))
-                    policy.load_state_dict(loaded_m.state_dict())
-                    print(f"  -> Agen {name} diinisialisasi dari: {p_path}")
+                    ckpt = torch.load(p_path, map_location=device)
+                    policy.load_state_dict_flexible(ckpt["state_dict"])
+                    print(f"  -> Agen {name} diinisialisasi (transfer bobot) dari: {p_path}")
                     loaded = True
                 except Exception as e:
                     print(f"  -> Gagal memuat {p_path}: {e}")
@@ -358,9 +358,9 @@ def train_multi_agent(
                 gm_path = os.path.join(checkpoints_dir, "grandmaster_model.pt")
                 if os.path.exists(gm_path):
                     try:
-                        loaded_m = MaskableActorCritic.load(gm_path, device=str(device))
-                        policy.load_state_dict(loaded_m.state_dict())
-                        print(f"  -> Agen {name} diinisialisasi dari base: {gm_path}")
+                        ckpt = torch.load(gm_path, map_location=device)
+                        policy.load_state_dict_flexible(ckpt["state_dict"])
+                        print(f"  -> Agen {name} diinisialisasi (transfer bobot) dari base: {gm_path}")
                         loaded = True
                     except Exception:
                         pass

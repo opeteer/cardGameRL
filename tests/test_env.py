@@ -75,7 +75,8 @@ class TestObservation:
         raw.reset(seed=42)
         obs = raw.observe("player_0")
 
-        assert obs.shape == (234,)
+        assert OBS_DIM == 308
+        assert obs.shape == (308,)
         assert obs.dtype == np.float32
         assert np.all(obs >= 0.0)
         assert np.all(obs <= 1.0)
@@ -87,6 +88,16 @@ class TestObservation:
         assert np.sum(obs[52:104]) == 0.0
         # [221:224]: 3 opponents each have 13 cards (13 / 13 = 1.0)
         np.testing.assert_allclose(obs[221:224], [1.0, 1.0, 1.0])
+        # [238:241]: Opponents <= 2 cards initially all 0.0
+        np.testing.assert_allclose(obs[238:241], [0.0, 0.0, 0.0])
+        # [241:244]: Opponents <= 3 cards initially all 0.0
+        np.testing.assert_allclose(obs[241:244], [0.0, 0.0, 0.0])
+        # [256]: Downstream urgency initially 0.0
+        assert obs[256] == 0.0
+        # [260:308]: 48-dim opponent profiles (Left, Opp, Right)
+        assert len(obs[260:308]) == 48
+        assert np.all(obs[260:308] >= 0.0)
+        assert np.all(obs[260:308] <= 1.0)
 
 
 class TestActionMasking:
