@@ -12,7 +12,8 @@ from gymnasium import spaces
 from pettingzoo import AECEnv
 from pettingzoo.utils import wrappers
 
-from big_two_rl.engine.game_state import GameState
+from big_two_rl.engine.game_state import GameState, calculate_penalty
+from big_two_rl.engine.card import get_rank
 from big_two_rl.env.actions import (
     NUM_ACTIONS,
     action_to_cards,

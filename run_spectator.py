@@ -16,6 +16,7 @@ from typing import Optional, List, Tuple
 from big_two_rl.engine.card import card_to_str, cards_to_str
 from big_two_rl.engine.evaluator import evaluate_hand
 from big_two_rl.engine.luck_meter import calculate_initial_hand_luck, get_hand_luck_breakdown
+from big_two_rl.engine.opponent_profiler import OpponentProfileManager
 from big_two_rl.env.actions import action_to_cards
 from big_two_rl.env.big_two_env import raw_env
 from big_two_rl.gui.spectator import BigTwoSpectator, DEFAULT_PLAYER_NAMES
@@ -118,6 +119,7 @@ def run_spectator_simulation(
     canonical_luck_history = [[] for _ in range(4)]
     current_seats = [0, 1, 2, 3]  # Map: seat index (0..3) -> canonical agent index (0..3)
     rng = np.random.default_rng(seed if seed is not None else 42)
+    profiler = OpponentProfileManager(agent_names=canonical_names)
 
     for game_idx in range(num_games):
         current_game_num = game_idx + 1
@@ -149,7 +151,9 @@ def run_spectator_simulation(
         seat_names = [canonical_names[current_seats[s]] for s in range(4)]
         seat_agents = [all_agents[current_seats[s]] for s in range(4)]
 
-        env = raw_env()
+        # Sinkronisasi susunan kursi ke profiler lawan posisional
+        profiler.set_seat_mapping({s: canonical_names[current_seats[s]] for s in range(4)})
+        env = raw_env(profile_manager=profiler)
         game_seed = (seed + game_idx) if seed is not None else None
         env.reset(seed=game_seed)
 
@@ -412,6 +416,24 @@ def run_spectator_simulation(
             "champion_score": canonical_scores[champ_idx],
             "luckiest": canonical_names[luckiest_idx],
             "luckiest_score": canonical_luck[luckiest_idx],
+            "positional_matchups": {
+                f"{k[0]}_vs_{k[1]}_at_{k[2]}": v
+                for k, v in profiler.positional_matchups.items()
+            },
+            "profiles": {
+                name: {
+                    "games_played": p.games_played,
+                    "wins": p.wins,
+                    "total_turns": p.total_turns,
+                    "total_plays": p.total_plays,
+                    "singles_played": p.singles_played,
+                    "pairs_played": p.pairs_played,
+                    "triples_played": p.triples_played,
+                    "five_cards_played": p.five_cards_played,
+                    "strategic_passes": p.strategic_passes,
+                }
+                for name, p in profiler.profiles.items()
+            }
         }
         with open(summary_json, "w") as f:
             json.dump(summary_data, f, indent=2)
