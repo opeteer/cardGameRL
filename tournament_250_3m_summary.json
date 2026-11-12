@@ -1,0 +1,302 @@
+{
+  "num_games": 250,
+  "players": [
+    "Curt",
+    "Albert",
+    "Sullivan",
+    "Bernstein"
+  ],
+  "wins": [
+    65,
+    55,
+    69,
+    61
+  ],
+  "scores": [
+    3629,
+    3449,
+    3631,
+    3710
+  ],
+  "total_luck": [
+    31757,
+    31903,
+    32873,
+    33374
+  ],
+  "avg_luck": [
+    127.03,
+    127.61,
+    131.49,
+    133.5
+  ],
+  "champion": "Bernstein",
+  "champion_wins": 61,
+  "champion_score": 3710,
+  "luckiest": "Bernstein",
+  "luckiest_score": 33374,
+  "positional_matchups": {
+    "Curt_vs_Albert_at_left": {
+      "games": 75,
+      "focal_losses": 54,
+      "focal_wins": 21,
+      "opp_wins": 16
+    },
+    "Curt_vs_Sullivan_at_opposite": {
+      "games": 100,
+      "focal_losses": 73,
+      "focal_wins": 27,
+      "opp_wins": 25
+    },
+    "Curt_vs_Bernstein_at_right": {
+      "games": 85,
+      "focal_losses": 60,
+      "focal_wins": 25,
+      "opp_wins": 18
+    },
+    "Albert_vs_Sullivan_at_left": {
+      "games": 85,
+      "focal_losses": 66,
+      "focal_wins": 19,
+      "opp_wins": 20
+    },
+    "Albert_vs_Bernstein_at_opposite": {
+      "games": 100,
+      "focal_losses": 75,
+      "focal_wins": 25,
+      "opp_wins": 23
+    },
+    "Albert_vs_Curt_at_right": {
+      "games": 75,
+      "focal_losses": 59,
+      "focal_wins": 16,
+      "opp_wins": 21
+    },
+    "Sullivan_vs_Bernstein_at_left": {
+      "games": 105,
+      "focal_losses": 75,
+      "focal_wins": 30,
+      "opp_wins": 28
+    },
+    "Sullivan_vs_Curt_at_opposite": {
+      "games": 100,
+      "focal_losses": 75,
+      "focal_wins": 25,
+      "opp_wins": 27
+    },
+    "Sullivan_vs_Albert_at_right": {
+      "games": 85,
+      "focal_losses": 65,
+      "focal_wins": 20,
+      "opp_wins": 19
+    },
+    "Bernstein_vs_Curt_at_left": {
+      "games": 85,
+      "focal_losses": 67,
+      "focal_wins": 18,
+      "opp_wins": 25
+    },
+    "Bernstein_vs_Albert_at_opposite": {
+      "games": 100,
+      "focal_losses": 77,
+      "focal_wins": 23,
+      "opp_wins": 25
+    },
+    "Bernstein_vs_Sullivan_at_right": {
+      "games": 105,
+      "focal_losses": 77,
+      "focal_wins": 28,
+      "opp_wins": 30
+    },
+    "Bernstein_vs_Sullivan_at_left": {
+      "games": 75,
+      "focal_losses": 58,
+      "focal_wins": 17,
+      "opp_wins": 21
+    },
+    "Bernstein_vs_Curt_at_right": {
+      "games": 85,
+      "focal_losses": 64,
+      "focal_wins": 21,
+      "opp_wins": 23
+    },
+    "Sullivan_vs_Albert_at_left": {
+      "games": 85,
+      "focal_losses": 62,
+      "focal_wins": 23,
+      "opp_wins": 21
+    },
+    "Sullivan_vs_Bernstein_at_right": {
+      "games": 75,
+      "focal_losses": 54,
+      "focal_wins": 21,
+      "opp_wins": 17
+    },
+    "Albert_vs_Curt_at_left": {
+      "games": 105,
+      "focal_losses": 81,
+      "focal_wins": 24,
+      "opp_wins": 23
+    },
+    "Albert_vs_Sullivan_at_right": {
+      "games": 85,
+      "focal_losses": 64,
+      "focal_wins": 21,
+      "opp_wins": 23
+    },
+    "Curt_vs_Bernstein_at_left": {
+      "games": 85,
+      "focal_losses": 62,
+      "focal_wins": 23,
+      "opp_wins": 21
+    },
+    "Curt_vs_Albert_at_right": {
+      "games": 105,
+      "focal_losses": 82,
+      "focal_wins": 23,
+      "opp_wins": 24
+    },
+    "Bernstein_vs_Curt_at_opposite": {
+      "games": 80,
+      "focal_losses": 58,
+      "focal_wins": 22,
+      "opp_wins": 17
+    },
+    "Bernstein_vs_Albert_at_right": {
+      "games": 60,
+      "focal_losses": 48,
+      "focal_wins": 12,
+      "opp_wins": 12
+    },
+    "Sullivan_vs_Curt_at_left": {
+      "games": 60,
+      "focal_losses": 44,
+      "focal_wins": 16,
+      "opp_wins": 17
+    },
+    "Sullivan_vs_Albert_at_opposite": {
+      "games": 80,
+      "focal_losses": 54,
+      "focal_wins": 26,
+      "opp_wins": 15
+    },
+    "Curt_vs_Bernstein_at_opposite": {
+      "games": 80,
+      "focal_losses": 63,
+      "focal_wins": 17,
+      "opp_wins": 22
+    },
+    "Curt_vs_Sullivan_at_right": {
+      "games": 60,
+      "focal_losses": 43,
+      "focal_wins": 17,
+      "opp_wins": 16
+    },
+    "Albert_vs_Bernstein_at_left": {
+      "games": 60,
+      "focal_losses": 48,
+      "focal_wins": 12,
+      "opp_wins": 12
+    },
+    "Albert_vs_Sullivan_at_opposite": {
+      "games": 80,
+      "focal_losses": 65,
+      "focal_wins": 15,
+      "opp_wins": 26
+    },
+    "Albert_vs_Bernstein_at_right": {
+      "games": 90,
+      "focal_losses": 72,
+      "focal_wins": 18,
+      "opp_wins": 26
+    },
+    "Curt_vs_Sullivan_at_left": {
+      "games": 90,
+      "focal_losses": 69,
+      "focal_wins": 21,
+      "opp_wins": 28
+    },
+    "Sullivan_vs_Curt_at_right": {
+      "games": 90,
+      "focal_losses": 62,
+      "focal_wins": 28,
+      "opp_wins": 21
+    },
+    "Bernstein_vs_Albert_at_left": {
+      "games": 90,
+      "focal_losses": 64,
+      "focal_wins": 26,
+      "opp_wins": 18
+    },
+    "Sullivan_vs_Bernstein_at_opposite": {
+      "games": 70,
+      "focal_losses": 52,
+      "focal_wins": 18,
+      "opp_wins": 16
+    },
+    "Albert_vs_Curt_at_opposite": {
+      "games": 70,
+      "focal_losses": 55,
+      "focal_wins": 15,
+      "opp_wins": 21
+    },
+    "Bernstein_vs_Sullivan_at_opposite": {
+      "games": 70,
+      "focal_losses": 54,
+      "focal_wins": 16,
+      "opp_wins": 18
+    },
+    "Curt_vs_Albert_at_opposite": {
+      "games": 70,
+      "focal_losses": 49,
+      "focal_wins": 21,
+      "opp_wins": 15
+    }
+  },
+  "profiles": {
+    "Curt": {
+      "games_played": 250,
+      "wins": 65,
+      "total_turns": 3316,
+      "total_plays": 1617,
+      "singles_played": 1059,
+      "pairs_played": 432,
+      "triples_played": 10,
+      "five_cards_played": 116,
+      "strategic_passes": 354
+    },
+    "Albert": {
+      "games_played": 250,
+      "wins": 55,
+      "total_turns": 3308,
+      "total_plays": 1614,
+      "singles_played": 1080,
+      "pairs_played": 413,
+      "triples_played": 8,
+      "five_cards_played": 113,
+      "strategic_passes": 227
+    },
+    "Sullivan": {
+      "games_played": 250,
+      "wins": 69,
+      "total_turns": 3326,
+      "total_plays": 1509,
+      "singles_played": 948,
+      "pairs_played": 399,
+      "triples_played": 10,
+      "five_cards_played": 152,
+      "strategic_passes": 467
+    },
+    "Bernstein": {
+      "games_played": 250,
+      "wins": 61,
+      "total_turns": 3316,
+      "total_plays": 1645,
+      "singles_played": 1101,
+      "pairs_played": 402,
+      "triples_played": 5,
+      "five_cards_played": 137,
+      "strategic_passes": 110
+    }
+  }
+}
